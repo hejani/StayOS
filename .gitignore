@@ -1,0 +1,22 @@
+# OS / editor noise not caught by feature-level .gitignore files.
+# Each feature directory (lumi/, pulse/) has its own .gitignore for its
+# own build artifacts, dependencies, and secrets — this file only covers
+# things that can appear anywhere in the repo, including at this root.
+
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Session-only bug tracker (local deployment notes, not repo source).
+bugs.md
+
+# Session-only UAT tracker (local acceptance-test notes, not repo source).
+uat.md
+
+# Kiro local tooling + specs/config for every feature directory (root, lumi,
+# pulse, and any future feature). Local IDE/agent state and specs, not app
+# source. Unanchored so it matches .kiro/ at any depth.
+.kiro/

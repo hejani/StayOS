@@ -1,0 +1,64 @@
+# StayOS
+
+> The operating system for hotel General Managers and associates — a
+> mobile-first platform turning fragmented hotel operational data into
+> proactive, AI-generated intelligence.
+
+- Prototype/demo monorepo (not production).
+- Each feature is a self-contained top-level directory with its own backend,
+  frontend, infrastructure, docs, `README.md`, and `AGENTS.md`. This single
+  repo-root `llms.txt` is the one index for the whole repo — features do not
+  carry their own.
+- Features share one PWA origin, one Cognito user pool, one AWS WAF web ACL, and
+  one DynamoDB operational data layer. Three static-export Next.js apps are
+  served from ONE shared CloudFront distribution: the StayOS shell at `/`
+  (unified login + feature launcher), LUMI at `/lumi`, PULSE at `/pulse`. A GM
+  signs in once at the shell and both features trust the shared browser session
+  (single sign-on). Serverless-first, CloudFormation nested stacks, Python 3.12
+  + Next.js, `us-east-1`.
+
+## Apps
+
+- [StayOS shell](stayos-shell/README.md): unified login + feature launcher at
+  `/`. Login when unauthenticated, feature grid (LUMI, PULSE) when authenticated.
+  Static-export Next.js; consumes the shared `@stayos/auth` module. Agent guide:
+  [stayos-shell/AGENTS.md](stayos-shell/AGENTS.md).
+- [LUMI](lumi/README.md): Feature 1, built and deployed. Served at `/lumi`. Daily
+  AI-generated GM brief (KPIs, VIP arrivals, overbooking risk, OOO rooms) as a
+  dashboard + audio brief, plus voice/chat Q&A agents. Agent guide:
+  [lumi/AGENTS.md](lumi/AGENTS.md).
+- [PULSE](pulse/README.md): Feature 2, built and tested. Served at `/pulse`.
+  Real-time tiered (CRITICAL/WARNING/INFO) AI-triaged alerts with closed-loop
+  resolution: a DynamoDB Streams rule engine, agentic triage on Amazon Bedrock
+  AgentCore Runtime via the shared StayOS Gateway, and dual-channel delivery
+  (AppSync Events realtime + Web Push). Deploys with the whole platform via
+  `make deploy-all`. Spec:
+  [pulse/.kiro/specs/initial-pulse-project/](pulse/.kiro/specs/initial-pulse-project/);
+  discovery trail: [pulse/aiplc-docs/](pulse/aiplc-docs/).
+
+## Shared
+
+- [shared/README.md](shared/README.md): the cross-feature shared layer.
+- [shared/auth/src/index.ts](shared/auth/src/index.ts): `@stayos/auth` — the
+  single client-side auth module shared by the shell, LUMI, and PULSE (Cognito
+  sign-in/refresh, JWT decode, and the `localStorage` `stayos.*` session that
+  powers SSO). Consumed via a build-time TypeScript path alias.
+
+## Docs
+
+- [openapi.yaml](openapi.yaml): StayOS REST API spec — currently the PULSE
+  real-time alerts API (LUMI's REST spec is in [lumi/openapi.yaml](lumi/openapi.yaml)).
+- [AGENTS.md](AGENTS.md): root contributor/agent guide — repo-wide safety,
+  conventions, and per-feature workflow.
+- [stayos-shell/AGENTS.md](stayos-shell/AGENTS.md): StayOS shell agent guide.
+- [lumi/AGENTS.md](lumi/AGENTS.md): LUMI-specific agent guide.
+- [pulse/AGENTS.md](pulse/AGENTS.md): PULSE-specific agent guide.
+
+## Optional
+
+- [shared/README.md](shared/README.md): the cross-feature shared layer — the
+  populated `shared/auth/` module and why the infrastructure carve-out is still
+  deferred.
+- [CONTRIBUTING.md](CONTRIBUTING.md): how to scope a PR to one feature.
+- [CHANGELOG.md](CHANGELOG.md): notable changes per release (`v1.4` is the only
+  release tag to date).

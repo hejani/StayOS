@@ -1,0 +1,217 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="1500" viewBox="0 0 1180 1500" font-family="Helvetica, Arial, sans-serif">
+  <!--
+    PULSE - AWS Architecture (hand-authored layered view).
+    Reads strictly top -> bottom as the alert lifecycle. Do not "optimize" node
+    positions with an auto-layout tool; the fixed coordinates are the point.
+    Source of truth for services: pulse/infrastructure/nested-stacks/*.yaml.
+  -->
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#5f6368"/>
+    </marker>
+    <marker id="arrowLoop" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#d93025"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3 L0,6 Z" fill="#0f9d58"/>
+    </marker>
+    <style>
+      .band  { fill:#f1f6ff; stroke:#c7dbff; stroke-width:1.5; rx:10; }
+      .bandlbl { fill:#1a3a6b; font-size:15px; font-weight:bold; }
+      .svc   { rx:8; }
+      .svctxt{ fill:#202124; font-size:12.5px; text-anchor:middle; }
+      .svcsub{ fill:#5f6368; font-size:10.5px; text-anchor:middle; }
+      .flow  { stroke:#5f6368; stroke-width:2; fill:none; marker-end:url(#arrow); }
+      .loop  { stroke:#d93025; stroke-width:2.2; fill:none; marker-end:url(#arrowLoop); }
+      .deliver{ stroke:#0f9d58; stroke-width:2.2; fill:none; marker-end:url(#arrowGreen); }
+      .side  { stroke:#9aa0a6; stroke-width:1.5; fill:none; stroke-dasharray:4 3; marker-end:url(#arrow); }
+      .elbl  { font-size:11.5px; fill:#3c4043; }
+      .step  { fill:#fff; font-size:12px; font-weight:bold; }
+      .title { fill:#1a3a6b; font-size:22px; font-weight:bold; text-anchor:middle; }
+    </style>
+  </defs>
+
+  <text x="590" y="34" class="title">PULSE — AWS Architecture (alert lifecycle)</text>
+
+  <!-- ============================ BANDS ============================ -->
+  <rect class="band" x="40"  y="60"   width="1100" height="150"/>
+  <text class="bandlbl" x="56" y="82">Client &amp; Edge  (reused StayOS/LUMI platform)</text>
+
+  <rect class="band" x="40"  y="240"  width="1100" height="150"/>
+  <text class="bandlbl" x="56" y="262">1 · API Layer  —  API Gateway v2 (HTTP API)</text>
+
+  <rect class="band" x="40"  y="420"  width="1100" height="150"/>
+  <text class="bandlbl" x="56" y="442">2 · Event Source → Rule Engine</text>
+
+  <rect class="band" x="40"  y="600"  width="1100" height="150"/>
+  <text class="bandlbl" x="56" y="622">3 · Agentic Triage  (async, CRITICAL / WARNING)</text>
+
+  <rect class="band" x="40"  y="780"  width="1100" height="150"/>
+  <text class="bandlbl" x="56" y="802">4 · Dual-Channel Delivery</text>
+
+  <rect class="band" x="40"  y="960"  width="1100" height="160"/>
+  <text class="bandlbl" x="56" y="982">5 · Closed-Loop Resolution</text>
+
+  <rect class="band" x="40"  y="1150" width="1100" height="150"/>
+  <text class="bandlbl" x="56" y="1172">State &amp; Observability  (supporting)</text>
+
+  <!-- ============================ NODES ============================ -->
+  <!-- Client / edge band -->
+  <rect class="svc" x="110" y="105" width="130" height="80" fill="#e8f0fe" stroke="#1a73e8"/>
+  <text class="svctxt" x="175" y="140">GM PWA</text><text class="svcsub" x="175" y="158">PULSE/VIPs/Ops/Kitchen</text>
+
+  <rect class="svc" x="360" y="105" width="130" height="80" fill="#fce8e6" stroke="#d93025"/>
+  <text class="svctxt" x="425" y="140">CloudFront + WAF</text><text class="svcsub" x="425" y="158">edge / TLS</text>
+
+  <rect class="svc" x="610" y="105" width="130" height="80" fill="#f3e8fd" stroke="#8430ce"/>
+  <text class="svctxt" x="675" y="140">Cognito</text><text class="svcsub" x="675" y="158">user pool (JWT)</text>
+
+  <rect class="svc" x="860" y="105" width="180" height="80" fill="#e6f4ea" stroke="#0f9d58"/>
+  <text class="svctxt" x="950" y="138">AgentCore Gateway</text><text class="svcsub" x="950" y="156">shared MCP tool layer</text>
+
+  <!-- 1 · API layer -->
+  <rect class="svc" x="360" y="285" width="150" height="80" fill="#eef3fc" stroke="#1a73e8"/>
+  <text class="svctxt" x="435" y="318">HTTP API</text><text class="svcsub" x="435" y="336">Cognito JWT authorizer</text>
+
+  <rect class="svc" x="610" y="285" width="150" height="80" fill="#fef0e3" stroke="#f09300"/>
+  <text class="svctxt" x="685" y="313">pulse-api λ</text><text class="svcsub" x="685" y="330">alerts/rules/approvals</text><text class="svcsub" x="685" y="345">/kitchen</text>
+
+  <rect class="svc" x="860" y="285" width="150" height="80" fill="#fef0e3" stroke="#f09300"/>
+  <text class="svctxt" x="935" y="318">pulse-ops-read λ</text><text class="svcsub" x="935" y="336">/vips, /ops (via MCP)</text>
+
+  <!-- 2 · event -> rule -->
+  <rect class="svc" x="200" y="465" width="200" height="80" fill="#e8eaf6" stroke="#3f51b5"/>
+  <text class="svctxt" x="300" y="495">LUMI operational tables ×5</text><text class="svcsub" x="300" y="513">DynamoDB Streams</text><text class="svcsub" x="300" y="528">NEW_AND_OLD_IMAGES</text>
+
+  <rect class="svc" x="610" y="465" width="150" height="80" fill="#fef0e3" stroke="#f09300"/>
+  <text class="svctxt" x="685" y="500">pulse-rule-evaluator λ</text><text class="svcsub" x="685" y="518">evaluate triggers</text>
+
+  <!-- 3 · triage -->
+  <rect class="svc" x="610" y="645" width="150" height="80" fill="#e6f4ea" stroke="#0f9d58"/>
+  <text class="svctxt" x="685" y="673">pulse-triage-agent</text><text class="svcsub" x="685" y="690">AgentCore Runtime</text><text class="svcsub" x="685" y="705">(Strands)</text>
+
+  <rect class="svc" x="860" y="645" width="150" height="80" fill="#e6f4ea" stroke="#0f9d58"/>
+  <text class="svctxt" x="935" y="678">Amazon Bedrock</text><text class="svcsub" x="935" y="696">Claude Sonnet</text>
+
+  <!-- 4 · delivery -->
+  <rect class="svc" x="360" y="825" width="150" height="80" fill="#fef0e3" stroke="#f09300"/>
+  <text class="svctxt" x="435" y="858">pulse-push-service λ</text><text class="svcsub" x="435" y="876">dual-channel</text>
+
+  <rect class="svc" x="610" y="825" width="150" height="80" fill="#fce8f0" stroke="#d81b60"/>
+  <text class="svctxt" x="685" y="853">AppSync Events</text><text class="svcsub" x="685" y="871">realtime WebSocket</text><text class="svcsub" x="685" y="886">(app open)</text>
+
+  <rect class="svc" x="860" y="825" width="150" height="80" fill="#fce8f0" stroke="#d81b60"/>
+  <text class="svctxt" x="935" y="853">EventBridge</text><text class="svcsub" x="935" y="871">Scheduler</text><text class="svcsub" x="935" y="886">(batch, escalation)</text>
+
+  <!-- 5 · closed loop -->
+  <rect class="svc" x="360" y="1005" width="160" height="80" fill="#fef0e3" stroke="#f09300"/>
+  <text class="svctxt" x="440" y="1033">pulse-action-executor λ</text><text class="svcsub" x="440" y="1051">write-back</text>
+
+  <rect class="svc" x="610" y="1005" width="160" height="80" fill="#fef0e3" stroke="#f09300"/>
+  <text class="svctxt" x="690" y="1033">pulse-demo-simulator λ</text><text class="svcsub" x="690" y="1051">triggers scenarios</text>
+
+  <!-- supporting band -->
+  <rect class="svc" x="110" y="1195" width="150" height="75" fill="#e8eaf6" stroke="#3f51b5"/>
+  <text class="svctxt" x="185" y="1226">pulse-alerts</text><text class="svcsub" x="185" y="1244">DynamoDB</text>
+
+  <rect class="svc" x="300" y="1195" width="170" height="75" fill="#e8eaf6" stroke="#3f51b5"/>
+  <text class="svctxt" x="385" y="1223">rules / history /</text><text class="svctxt" x="385" y="1240">push-subs / kitchen</text>
+
+  <rect class="svc" x="640" y="1195" width="140" height="75" fill="#fce8f0" stroke="#d81b60"/>
+  <text class="svctxt" x="710" y="1233">CloudWatch</text>
+
+  <rect class="svc" x="820" y="1195" width="120" height="75" fill="#fce8f0" stroke="#d81b60"/>
+  <text class="svctxt" x="880" y="1233">SNS (alarms)</text>
+
+  <rect class="svc" x="980" y="1195" width="120" height="75" fill="#fce8f0" stroke="#d81b60"/>
+  <text class="svctxt" x="1040" y="1226">SSM Params</text><text class="svcsub" x="1040" y="1244">gateway/runtime</text>
+
+  <!-- ============================ EDGES ============================ -->
+  <!-- 1: PWA -> CloudFront -> HTTP API -->
+  <path class="flow" d="M240,150 H360"/>
+  <text class="elbl" x="252" y="142">1 · HTTPS</text>
+  <path class="flow" d="M425,185 V285"/>
+  <text class="elbl" x="433" y="240">request</text>
+  <!-- HTTP API -> pulse-api / ops-read -->
+  <path class="flow" d="M510,320 H610"/>
+  <path class="flow" d="M510,335 C560,360 810,360 860,330"/>
+  <!-- PWA -> Cognito auth (dotted) -->
+  <path class="side" d="M240,130 C420,80 560,90 675,105"/>
+  <text class="elbl" x="520" y="86">auth</text>
+  <!-- ops-read -> Gateway (MCP) -->
+  <path class="side" d="M935,285 C935,240 950,215 950,185"/>
+  <text class="elbl" x="955" y="245">MCP</text>
+
+  <!-- 2: op tables -> rule evaluator (the Stream) -->
+  <path class="flow" d="M400,505 H610"/>
+  <text class="elbl" x="452" y="497">2 · DynamoDB Stream</text>
+  <!-- pulse-api -> alerts (CRUD) down the far-RIGHT margin (x=1115) -->
+  <path class="side" d="M760,325 C1115,325 1115,900 1115,1160 C1115,1200 400,1230 260,1230"/>
+  <text class="elbl" x="1050" y="700">CRUD</text>
+
+  <!-- 3: rule -> triage (async) -->
+  <path class="flow" d="M685,545 V645"/>
+  <text class="elbl" x="693" y="600">3 · async invoke</text>
+  <!-- triage -> bedrock -->
+  <path class="flow" d="M760,685 H860"/>
+  <!-- triage -> gateway (MCP tools, dotted up) -->
+  <path class="side" d="M760,660 C820,500 940,320 950,185"/>
+  <text class="elbl" x="855" y="470">MCP tools</text>
+  <!-- gateway -> op tables (read-only, dotted) -->
+  <path class="side" d="M860,150 C560,300 360,420 360,465"/>
+  <text class="elbl" x="470" y="360">read-only</text>
+  <!-- rule -> alerts (create alert) down the x=580 channel, kept clear of nodes -->
+  <path class="side" d="M660,545 C580,760 300,1050 265,1195"/>
+  <text class="elbl" x="470" y="1120">create alert</text>
+
+  <!-- 4: alerts drive push-service; push -> appsync + PWA (green) -->
+  <path class="deliver" d="M435,905 V825"/>
+  <text class="elbl" x="443" y="945">4 · notify</text>
+  <path class="deliver" d="M510,865 H610"/>
+  <text class="elbl" x="530" y="857">realtime</text>
+  <!-- appsync -> PWA over the far-LEFT margin channel (x=70) so it clears the middle bands -->
+  <path class="deliver" d="M610,875 C120,875 70,700 70,300 C70,210 120,175 175,185"/>
+  <text class="elbl" x="80" y="620">wss → app</text>
+  <!-- push-service -> PWA over the left margin (x=95) -->
+  <path class="deliver" d="M360,860 C150,860 95,700 95,300 C95,215 130,180 175,180"/>
+  <text class="elbl" x="105" y="500">Web Push (VAPID)</text>
+  <path class="side" d="M905,825 C820,760 500,760 460,825"/>
+  <text class="elbl" x="640" y="770">schedule</text>
+
+  <!-- 5: GM approval -> executor -> write-back + RESOLVED (red loop) over RIGHT/mid channels -->
+  <!-- pulse-api -> action-executor: down the x=560 channel -->
+  <path class="loop" d="M660,365 C560,500 550,850 500,1005"/>
+  <text class="elbl" x="512" y="700" fill="#d93025">5 · GM approves</text>
+  <!-- executor -> op tables (write-back) up the x=340 channel -->
+  <path class="loop" d="M400,1005 C300,820 300,600 330,545"/>
+  <text class="elbl" x="200" y="880" fill="#d93025">write-back clears condition</text>
+  <!-- executor -> alerts (RESOLVED) -->
+  <path class="loop" d="M380,1085 C300,1130 230,1160 205,1195"/>
+  <text class="elbl" x="235" y="1150" fill="#d93025">RESOLVED</text>
+  <!-- simulator -> op tables (dotted) down the x=790 channel -->
+  <path class="side" d="M690,1005 C790,820 560,600 400,530"/>
+  <text class="elbl" x="700" y="1000">mutate</text>
+
+  <!-- supporting: observability (kept faint) -->
+  <path class="side" d="M685,545 C760,900 700,1120 710,1195"/>
+  <path class="side" d="M780,1233 H820"/>
+
+  <!-- ============================ LEGEND ============================ -->
+  <rect x="40" y="1320" width="1100" height="150" fill="#ffffff" stroke="#dadce0" rx="8"/>
+  <text x="56" y="1345" font-size="14" font-weight="bold" fill="#202124">Legend — the numbered path is the alert lifecycle (read top to bottom)</text>
+
+  <line x1="60" y1="1372" x2="110" y2="1372" class="flow"/>
+  <text x="120" y="1376" font-size="12.5" fill="#3c4043">Primary flow (request, stream, triage)</text>
+
+  <line x1="60" y1="1400" x2="110" y2="1400" class="deliver"/>
+  <text x="120" y="1404" font-size="12.5" fill="#3c4043">Delivery (green): AppSync realtime + Web Push</text>
+
+  <line x1="60" y1="1428" x2="110" y2="1428" class="loop"/>
+  <text x="120" y="1432" font-size="12.5" fill="#3c4043">Closed loop (red): GM approval → write-back → RESOLVED</text>
+
+  <line x1="620" y1="1372" x2="670" y2="1372" class="side"/>
+  <text x="680" y="1376" font-size="12.5" fill="#3c4043">Supporting: auth, MCP tool calls, CRUD, observability</text>
+
+  <text x="620" y="1404" font-size="12.5" fill="#3c4043">λ = AWS Lambda · icons colored by AWS service family</text>
+  <text x="620" y="1428" font-size="12.5" fill="#3c4043">Shared with LUMI: CloudFront/WAF, Cognito, Gateway, op tables</text>
+</svg>
