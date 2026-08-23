@@ -1,7 +1,5 @@
 # StayOS — Agent Guide (repo root)
 
-eiifcbnctvhtknjltdledjrrcgivgnukeviecgiihdeh
-
 
 This file holds the rules that apply everywhere. Each feature's `AGENTS.md`
 adds only feature-specific detail and assumes these rules.
