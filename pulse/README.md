@@ -34,7 +34,7 @@ PULSE consumes item-change events from LUMI's five operational tables
 `stayos-work-orders`) via DynamoDB Streams and adds five PULSE-owned tables
 (`pulse-alerts`, `pulse-rules`, `pulse-alert-history`, `pulse-push-subscriptions`,
 `pulse-kitchen`). Full schemas for all tables (LUMI + PULSE) live in the
-canonical [Data Model Reference](../lumi/docs/data-model.md). What is genuinely
+canonical [Data Model Reference](../docs/data-model.md). What is genuinely
 new versus LUMI:
 
 - an event-driven **Rule Engine**;

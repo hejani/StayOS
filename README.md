@@ -97,7 +97,7 @@ properties. The 5 dataset tables seed once, are read-only at runtime
 (`Query`/`GetItem`), and stream changes (`NEW_AND_OLD_IMAGES`) — which is what
 PULSE's rule engine evaluates to fire real-time alerts.
 
-**The canonical schema reference is [`lumi/docs/data-model.md`](lumi/docs/data-model.md)**
+**The canonical schema reference is [`docs/data-model.md`](docs/data-model.md)**
 — full table schemas, keys/GSIs, enumerated values, relationships, and seed
 volumes. It is not duplicated here to avoid drift.
 

@@ -212,7 +212,7 @@ LUMI reads from the shared DynamoDB operational layer seeded at deploy time with
 30 days of deterministic hotel operations data (the seed-data Lambda, a
 CloudFormation custom resource, generates ~24,000 items across LUMI's 7
 `stayos-*` tables). This same data layer is shared platform-wide — PULSE consumes
-its streams. See the canonical **[Data Model Reference](docs/data-model.md)** for
+its streams. See the canonical **[Data Model Reference](../docs/data-model.md)** for
 complete schemas, relationships, access patterns, enumerated values, and
 generation parameters for both LUMI and PULSE.
 

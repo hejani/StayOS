@@ -1,12 +1,7 @@
 # StayOS — Agent Guide (repo root)
 
-StayOS is a prototype/customer-demo monorepo: the operating system for hotel
-General Managers. It hosts multiple **features** on one shared PWA shell, one
-shared Cognito user pool, one shared AWS WAF web ACL, and one shared DynamoDB
-operational data layer. Each feature is a self-contained top-level directory
-with its own `backend/`, `frontend/`, `infrastructure/`, `README.md`,
-`AGENTS.md`, and `Makefile`. A single repo-root `llms.txt` indexes the whole
-repo — individual features do not carry their own.
+eiifcbnctvhtknjltdledjrrcgivgnukeviecgiihdeh
+
 
 This file holds the rules that apply everywhere. Each feature's `AGENTS.md`
 adds only feature-specific detail and assumes these rules.
@@ -22,10 +17,9 @@ All three frontends are static-export Next.js apps served from ONE shared CloudF
 
 ## Golden rules (safety + workflow)
 
-- NEVER `git commit`, `git push`, or deploy without an explicit request from the user.
 - Scope every change to ONE feature. A change under `lumi/` should not touch `pulse/` or `shared/`, and vice versa.
 - Do NOT modify another feature's files. There are two sanctioned cross-feature exceptions, both to be treated as additive/shared: (1) the shared StayOS AgentCore Gateway tool layer in `lumi/backend/functions/tools/` + `lumi/backend/tools/tool-schema.json`, which PULSE agents also consume; (2) the shared auth module in `shared/auth/` (`@stayos/auth`), consumed by the shell, LUMI, and PULSE. A change that deliberately spans the shell + both features (e.g. a coordinated auth change) is allowed, but call it out explicitly.
-- Move code into `shared/` only once a second consumer actually needs it — not before. `shared/auth/` meets that bar (three consumers); the shared *infrastructure* carve-out does not yet.
+- Prefer moving code into `shared/` once a second consumer actually needs it rather than speculatively, but treat this as a guideline rather than a hard gate. `shared/auth/` is the clearest example (three consumers); the shared *infrastructure* carve-out can move here when it makes sense.
 - Prefer staging specific files over `git add -A`. Use imperative-mood commit messages and `kebab-case` branch names (`feature/...`, `fix/...`).
 - Run the relevant build/tests before claiming a task is done.
 
@@ -52,7 +46,7 @@ All three frontends are static-export Next.js apps served from ONE shared CloudF
 
 ### NAMING
 
-- One `StackPrefix` per feature (`lumi`, `pulse`) propagated to all resource names.
+- Resources carry the `stayos` project-name prefix. Use a `StackPrefix` of `stayos-<feature>` (e.g. `stayos-lumi`, `stayos-pulse`) propagated to all resource names.
 - Physical names kebab-case: `${StackPrefix}-<purpose>`. CloudFormation logical IDs PascalCase.
 - Python: `snake_case` files/functions/vars, `UPPER_SNAKE` constants, handler always named `lambda_handler`.
 - DynamoDB attributes `camelCase`. React components PascalCase; TS utils camelCase; no `I` interface prefix.
@@ -92,5 +86,8 @@ cd <feature>/backend && python3 -m pytest
 
 - `llms.txt` (repo-root index for the whole repo) and each feature's `README.md`.
 - Each feature `README.md` for prerequisites and deploy steps.
-- The feature spec under `<feature>/.kiro/specs/` (requirements / design / tasks).
+- The root `Makefile` for how to build/test/deploy each feature (it delegates to `make -C <feature> <target>`).
+- `openapi.yaml` (repo root) for the REST API surface.
+- `docs/data-model.md` for the canonical platform-wide data model (LUMI + PULSE table schemas, keys/GSIs, enumerated values, relationships, seed volumes).
+- Each feature's `AGENTS.md` for feature-specific rules on top of this root guide.
 - `CONTRIBUTING.md` for PR scoping, `shared/README.md` for the shared-layer boundary.

@@ -22,7 +22,7 @@ on AWS (`us-east-1`).
 - **Shared data layer** — 5 read-only operational dataset tables + 2 LUMI
   application tables (`stayos-*`), seeded with ~24k items of deterministic hotel
   operations data across 5 pilot properties; `NEW_AND_OLD_IMAGES` DynamoDB
-  Streams feed PULSE. See [`lumi/docs/data-model.md`](lumi/docs/data-model.md).
+  Streams feed PULSE. See [`docs/data-model.md`](docs/data-model.md).
 - **Shared StayOS AgentCore Gateway** — one MCP tool layer (read-only hotel-ops
   tools) consumed by both LUMI's chat agent and PULSE's triage agent.
 - **Root `make deploy-all`** — one-command platform deploy: LUMI, then PULSE

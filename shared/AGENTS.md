@@ -1,11 +1,13 @@
 # Shared — Agent Guide (StayOS cross-feature layer)
 
 `shared/` holds code genuinely shared across more than one StayOS feature. The
-rule is strict: something moves here **only once a second real consumer exists**,
-never speculatively. Today that bar is met by exactly one thing — the shared
-StayOS auth module (`@stayos/auth`), consumed by the shell, LUMI, and PULSE. The
-shared *infrastructure* carve-out (the Cognito user pool + WAF web ACL) is
-**deliberately deferred** and does not live here yet.
+plan is for cross-feature shared resources to live here. As a **guideline**
+(not a strict rule), prefer moving something here once a second real consumer
+exists rather than speculatively — but this is a preference, not a hard gate.
+Today the clearest example is the shared StayOS auth module (`@stayos/auth`),
+consumed by the shell, LUMI, and PULSE. The shared *infrastructure* carve-out
+(the Cognito user pool + WAF web ACL) currently still lives in
+`lumi/infrastructure/` and can move here when it makes sense.
 
 The root [`../AGENTS.md`](../AGENTS.md) applies in full (safety rules, NAMING,
 testing, runtime/stack). This file adds only `shared/` specifics. See
@@ -68,12 +70,12 @@ that app's Cognito config and re-exports the primitives, so existing
   `AuthUser` fields, or storage keys that any consumer relies on.
 - **SSR-safe.** The apps are static-export Next.js; auth modules may be evaluated
   without a DOM. Guard every browser API (`typeof window`) as `storage.ts` does.
-- **Populate `shared/` conservatively.** Add a new subdirectory here only when a
-  second real consumer needs the code — not in anticipation. The shared
-  infrastructure layer (Cognito/WAF) stays in `lumi/infrastructure/` until a
-  second consumer's own stacks make the real dependency shape concrete; move
-  `auth.yaml` (and, if genuinely shared, the WAF web ACL) into
-  `shared/infrastructure/` only then.
+- **Populate `shared/` thoughtfully.** Prefer adding a new subdirectory here
+  once a second real consumer needs the code rather than purely in anticipation,
+  but treat this as a guideline rather than a hard gate. The shared
+  infrastructure layer (Cognito/WAF) currently lives in `lumi/infrastructure/`;
+  move `auth.yaml` (and, if genuinely shared, the WAF web ACL) into
+  `shared/infrastructure/` when the shared shape is clear enough to justify it.
 
 ## Commands
 

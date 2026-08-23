@@ -27,7 +27,7 @@ properties) except `stayos-settings` (by `gmAlias`), `pulse-alerts` /
 | Table | PK | SK | GSI | Items | Access |
 |-------|----|----|-----|-------|--------|
 | **stayos-rooms** | propertyId | roomNumber | propertyId-statusRoomNumber-index | 2,008 | read-only dataset (stream on) |
-| **stayos-guests** | propertyId | guestId | propertyId-loyaltyTierGuestId-index | 250 | read-only dataset (stream on) |
+| **stayos-guests** | propertyId | guestId | propertyId-loyaltyTierGuestId-index | 250 | seeded read-only; also receives GM-approved closed-loop complaint write-back (stream on) |
 | **stayos-reservations** | propertyId | dateReservationId | propertyId-arrivalDate-index | 21,510 | read-only dataset (stream on) |
 | **stayos-revenues** | propertyId | date | — | 150 | read-only dataset (stream on) |
 | **stayos-work-orders** | propertyId | workOrderId | propertyId-statusCreatedAt-index | 775 | read-only dataset (stream on) |
@@ -78,6 +78,9 @@ erDiagram
     PULSE-ALERTS }o--|| GUESTS : "stream → rule engine"
     PULSE-RULES ||--o{ PULSE-ALERTS : "evaluated to produce"
     PULSE-ALERTS ||--o{ PULSE-ALERT-HISTORY : "version history"
+    PULSE-ALERTS }o--|| RESERVATIONS : "closed-loop write-back"
+    PULSE-ALERTS }o--|| ROOMS : "closed-loop write-back"
+    PULSE-ALERTS }o--|| GUESTS : "closed-loop write-back"
 ```
 
 PULSE's rule engine reads the 5 dataset-table streams to create `pulse-alerts`;
@@ -97,7 +100,7 @@ Three separate Lambda-adjacent compute paths read these tables, each with a narr
 | **Voice Agent** (AgentCore Runtime, LUMI) | reservations, rooms, guests, revenues, work-orders, briefs | GetItem, Query (by GSI) | Direct, in-process (`tool_handlers.py`) — no Lambda/Gateway hop, for lowest latency during a live audio session |
 | **Tool Lambda** `stayos-tools` (AgentCore Gateway target, shared) | reservations, rooms, guests, revenues, work-orders, briefs | GetItem, Query (by GSI) | Invoked by the AgentCore Gateway on behalf of the **LUMI chat agent** and the **PULSE triage/ops-read** consumers via MCP; implements the shared read-only tools (`lumi/backend/functions/tools/lambda_function.py`) |
 | **PULSE Rule Engine** (`pulse-rule-evaluator`) | reservations, rooms, guests, revenues, work-orders (via **Streams**), pulse-rules | Stream event source mapping; Query `pulse-rules` | Consumes `NEW_AND_OLD_IMAGES` stream records; evaluates per-property rules; writes `pulse-alerts` |
-| **PULSE Action Executor** (`pulse-action-executor`) | reservations, rooms (write-back), pulse-alerts | `TransactWriteItems` (write) | The **only** runtime writer to LUMI operational tables — a GM-approved closed-loop mutation that clears the condition and resolves the originating alert atomically |
+| **PULSE Action Executor** (`pulse-action-executor`) | reservations, rooms, guests (write-back), pulse-alerts | `TransactWriteItems` (write) | The **only** runtime writer to LUMI operational tables — a GM-approved closed-loop mutation that clears the condition (including complaint write-back into `stayos-guests`) and resolves the originating alert atomically |
 | **PULSE ops-read facade** (`pulse-ops-read`) | reservations, rooms, guests, work-orders (via Gateway tools) | via shared Gateway MCP | Backs the VIPs/Ops tabs; reads through the shared Gateway, never direct |
 
 All read paths scope every query/GetItem to a single `propertyId` (the DynamoDB
