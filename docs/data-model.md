@@ -18,6 +18,15 @@ properties) except `stayos-settings` (by `gmAlias`), `pulse-alerts` /
 `pulse-alert-history` (by `alertId`), and `pulse-push-subscriptions` (by
 `gmAlias`).
 
+> **Physical table naming.** LUMI's DynamoDB tables are defined in
+> `lumi/infrastructure/nested-stacks/data.yaml` with a `StackPrefix` of `lumi`,
+> so the **deployed physical names are `lumi-rooms`, `lumi-guests`,
+> `lumi-reservations`, `lumi-revenues`, `lumi-work-orders`, `lumi-briefs`, and
+> `lumi-settings`**. The `stayos-*` names used throughout this document (and in
+> some code comments/defaults) are the logical/legacy naming; when inspecting
+> the account, look for the `lumi-*` tables. PULSE tables use `StackPrefix`
+> `pulse` and are physically named `pulse-*` as shown.
+
 ---
 
 ## Table Summary
@@ -31,7 +40,7 @@ properties) except `stayos-settings` (by `gmAlias`), `pulse-alerts` /
 | **stayos-reservations** | propertyId | dateReservationId | propertyId-arrivalDate-index | 21,510 | read-only dataset (stream on) |
 | **stayos-revenues** | propertyId | date | — | 150 | read-only dataset (stream on) |
 | **stayos-work-orders** | propertyId | workOrderId | propertyId-statusCreatedAt-index | 775 | read-only dataset (stream on) |
-| **stayos-briefs** | propertyId | briefDate | — | 58 | LUMI read/write |
+| **stayos-briefs** | propertyId | briefDate | — | 35 | LUMI read/write |
 | **stayos-settings** | gmAlias | — | — | 5 | LUMI read/write |
 
 The 5 dataset tables are seeded once and are read-only at runtime
@@ -44,7 +53,7 @@ GM-approved closed-loop Action Executor.
 | Table | PK | SK | GSI | Purpose |
 |-------|----|----|-----|---------|
 | **pulse-alerts** | alertId | — | propertyId-status-index · propertyId-createdAt-index · gmAlias-status-index · escalationStatus-escalationNextCheckAt-index | Live alerts + attached `triageBrief`, approval, escalation state. Stream on (`NEW_AND_OLD_IMAGES`) for history/escalation consumers. |
-| **pulse-rules** | propertyId | ruleType | — | Per-property enabled rule set the rule engine evaluates (seeded: 6 alert types × 5 properties). |
+| **pulse-rules** | propertyId | ruleType | — | Per-property enabled rule set the rule engine evaluates (seeded: 6 alert types × 5 properties = 30). |
 | **pulse-alert-history** | alertId | version | propertyId-createdAt-index | Append-only status-change/version history (TTL `expiresAt`). |
 | **pulse-push-subscriptions** | gmAlias | endpointHash | — | Web Push (VAPID) device subscriptions per GM. |
 | **pulse-kitchen** | propertyId | — | — | One Kitchen/F&B snapshot per property (banquet countdown, F&B stats, delivery SLA, orders, channel mix) for the Kitchen tab. |
@@ -62,7 +71,7 @@ writes back only via the GM-approved closed loop:
 
 ```mermaid
 erDiagram
-    SETTINGS ||--|| ROOMS : "propertyId"
+    SETTINGS ||--o{ ROOMS : "propertyId"
     ROOMS ||--o{ GUESTS : "currentGuestId"
     ROOMS ||--o{ WORK-ORDERS : "currentWorkOrderId"
     RESERVATIONS }o--|| GUESTS : "guestId"
@@ -76,6 +85,8 @@ erDiagram
     PULSE-ALERTS }o--|| RESERVATIONS : "stream → rule engine"
     PULSE-ALERTS }o--|| ROOMS : "stream → rule engine"
     PULSE-ALERTS }o--|| GUESTS : "stream → rule engine"
+    PULSE-ALERTS }o--|| REVENUES : "stream → rule engine"
+    PULSE-ALERTS }o--|| WORK-ORDERS : "stream → rule engine"
     PULSE-RULES ||--o{ PULSE-ALERTS : "evaluated to produce"
     PULSE-ALERTS ||--o{ PULSE-ALERT-HISTORY : "version history"
     PULSE-ALERTS }o--|| RESERVATIONS : "closed-loop write-back"
@@ -275,14 +286,23 @@ Blended per property based on `businessWeight` factor.
 
 | Table | Items | % of LUMI Total |
 |-------|-------|-----------------|
-| stayos-reservations | 21,510 | 86.9% |
+| stayos-reservations | ~21,510 | 86.9% |
 | stayos-rooms | 2,008 | 8.1% |
 | stayos-work-orders | 775 | 3.1% |
 | stayos-guests | 250 | 1.0% |
 | stayos-revenues | 150 | 0.6% |
-| stayos-briefs | 58 | 0.2% |
+| stayos-briefs | 35 | 0.1% |
 | stayos-settings | 5 | <0.1% |
-| **Total** | **~24,756** | |
+| **Total** | **~24,733** | |
+
+The `stayos-briefs` figure is the **seeded** volume: 5 GMs x 7 days = 35 records
+(`lumi/backend/functions/seed-data/historical_briefs.py`). At runtime the daily
+roll-forward's `RegenerateBrief` step appends one brief per property per day, so
+the live table grows above 35 (bounded by the 30-day briefs TTL). The
+`stayos-reservations` count is deterministic but **data-driven** (derived from
+revenue arrivals + group-event blocks + future days rather than a single
+constant), so it is shown as approximate; regenerate the dataset to confirm the
+exact value.
 
 **PULSE tables** are runtime/demo-driven (not part of the seeded volume). Their
 sizes vary with alert activity; on deploy they hold only seeded rules
@@ -290,3 +310,95 @@ sizes vary with alert activity; on deploy they hold only seeded rules
 snapshots (`pulse-kitchen`: 1 per property = 5). `pulse-alerts`,
 `pulse-alert-history`, and `pulse-push-subscriptions` grow as alerts fire and
 GMs subscribe.
+
+
+---
+
+## Unified Data Orchestrator (how the data is produced and refreshed)
+
+The tables, keys, and GSIs above are **unchanged** by the orchestrator. What
+follows is an explanatory note about *who* writes this data, *when*, and *how*
+generation re-anchors to time. It does not alter any schema.
+
+The shared **Unified Data Orchestrator** (`StackPrefix` `stayos-data`, home
+`shared/data-orchestrator/`) owns the full demo-data lifecycle via a Step
+Functions state machine (`stayos-data-orchestrator`):
+`Quiesce -> Generate -> Reconcile -> UnQuiesce -> RegenerateBrief -> PrimeBaseline`.
+It reuses the existing LUMI generators and the PULSE demo simulator rather than
+re-implementing them. (Beyond this happy path the machine also has error states
+`CatchUnQuiesce` — which re-runs `UnQuiesce` with retry so PULSE is never left
+suppressed — and a terminal `ExecutionFailed` fail state.)
+
+- **Seeded + rolled forward.** On first deploy the orchestrator runs a full seed
+  (`mode: "seed"`); thereafter one EventBridge Scheduler rule per pilot property
+  fires at that property's local midnight (`mode: "roll-forward"`) and
+  re-anchors the deterministic 30-day window to a new `Reference_Date`. Writes
+  are **idempotent upserts** (put-if-changed, never bulk-delete on the scheduled
+  path), so a re-run with the same date is a no-op and the LUMI steady-state
+  (~24,700 seeded items, plus the small daily brief accumulation) does not grow
+  unbounded (aged items are reaped by existing TTLs).
+- **Quiesce during the rewrite.** While a property's tables are being rewritten,
+  the PULSE rule engine is quiesced (its DynamoDB Streams event-source-mapping is
+  paused) so the bulk upserts do not emit an alert storm; the orchestrator
+  un-quiesces after reconciliation, and its `Catch` path always un-quiesces so
+  PULSE is never left suppressed. No DynamoDB safety protections (streams,
+  backups) are disabled.
+
+### The ambient PULSE baseline (`baselineManaged`)
+
+After un-quiesce, the orchestrator primes a **curated baseline** for the
+property by writing a small, deterministic, bounded set of `pulse-alerts` items
+directly (it does **not** depend on the quiesced stream fallout). These items:
+
+- are stamped `baselineManaged = True` and carry a `dedupeKey` prefixed
+  `baseline#<propertyId>#<slug>`, so a bounded reset-then-prime targets exactly
+  the baseline id set and never touches real or presenter-fired live alerts;
+- span three tiers (CRITICAL/WARNING/INFO) and five alert types, including at
+  least one alert with an attached `triageBrief` and at least one `ESCALATED`
+  alert flagged for mandatory GM review;- are byte-identical across primings (fixed `createdAt`, no randomness), so the
+  feed a presenter opens is predictable.
+
+Live alerts fired on stage (below) never carry the `baselineManaged` marker or
+the `baseline#` dedupe prefix, so the ambient baseline and live fire are always
+distinguishable at the `pulse-alerts` table level.
+
+> **Note on alert-type sets.** The baseline catalog uses **5** alert types
+> (`WALK_RISK`, `COMPLAINT_ESCALATION`, `VIP_ROOM_NOT_READY`, `OOO_CLUSTER`,
+> `PREMIUM_CANCELLATION`). This is a deliberately smaller set than the **6**
+> rule types seeded into `pulse-rules` (the above plus `VIP_CHECKIN`); don't
+> conflate the two — the baseline primes a curated subset, not one alert per
+> rule type.
+
+### Presenter live-fire flow (reuses existing PULSE demo routes)
+
+The dramatic "watch it fire" moment reuses PULSE's **existing** demo scenario
+routes with **no new PULSE write-path code**:
+
+1. **Baseline is ambient.** When the presenter opens PULSE, the curated baseline
+   is already present (primed by the orchestrator).
+2. **Press to fire.** `POST /demo/scenarios/{scenarioId}` mutates a LUMI
+   operational item via the demo simulator; the DynamoDB Stream drives the rule
+   engine, which creates a **distinct** new alert (a fresh variant-scoped
+   `dedupeKey` -> fresh `alertId`) that stacks *on top of* the baseline. Each
+   press mints a new variant, so repeated presses add distinct alerts rather
+   than deduping onto one.
+3. **`/reset` between runs.** `POST /demo/scenarios/{scenarioId}/reset` clears
+   the scenario's operational change, restoring the pre-fire state (the baseline
+   remains intact) so the demo can be run again cleanly.
+4. **Gated.** These `/demo/*` routes are exposed only when the
+   `EnableDemoSimulator` CloudFormation condition / `ENABLE_DEMO_SIMULATOR`
+   environment control is truthy; a real deployment sets it `"false"` and the
+   routes 404 as if absent.
+
+**Manual dress rehearsal (before going on stage):**
+
+1. Trigger a roll-forward for the demo property (manual `StartExecution` with
+   `{mode:"roll-forward", propertyId}`), or rely on the local-midnight schedule.
+2. Open PULSE and confirm the ambient baseline is present (five curated alerts,
+   including the escalated complaint and the walk-risk alert with a triage
+   brief).
+3. Press a scenario (e.g. `walk-risk`) and confirm a distinct new alert appears
+   on top of the baseline; drive it through triage/approval to show the closed
+   loop.
+4. `POST .../reset` and confirm the feed returns to the baseline-only state.
+5. Repeat step 3 to confirm re-runs are clean.

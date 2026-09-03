@@ -1,5 +1,5 @@
 # Development and testing dependencies for LUMI backend
-pytest==8.3.0
+pytest==9.0.3
 moto[dynamodb,cognitoidp,s3,polly,sns,secretsmanager]==5.0.0
 pytest-mock==3.14.0
 flake8==7.1.0

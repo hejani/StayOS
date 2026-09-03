@@ -14,7 +14,7 @@ Supports REQ-DS-8 (BatchWriteItem with 25 items/batch, exponential backoff).
 import logging
 import time
 from decimal import Decimal
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import boto3
 from botocore.config import Config
@@ -86,40 +86,265 @@ class BatchWriter:
         self.table_name = table_name
         self.success_count: int = 0
         self.failure_count: int = 0
+        # Number of items that were unchanged and therefore skipped in
+        # idempotent-upsert mode (put-if-changed). Zero in plain write mode.
+        self.skipped_count: int = 0
+        # Number of items whose idempotent read-back could NOT be completed
+        # (BatchGetItem errored after retries), so they were treated as changed
+        # and rewritten - i.e. idempotent-upsert silently degraded toward a full
+        # write for these items. Surfaced distinctly so a transient throttle is
+        # not confused with genuine changes (review finding CR-6). Zero on the
+        # healthy path and in plain write mode.
+        self.readback_fallback_count: int = 0
+        # Lazily resolved list of key attribute names for this table, used by
+        # idempotent-upsert mode to build the key for each item's read-back.
+        self._key_attributes: Optional[List[str]] = None
 
-    def write_items(self, items: List[Dict[str, Any]]) -> Dict[str, int]:
+    def write_items(
+        self, items: List[Dict[str, Any]], idempotent: bool = False
+    ) -> Dict[str, int]:
         """Write a list of items to DynamoDB in batches of 25.
 
         Splits the input list into chunks of BATCH_WRITE_SIZE, converts float
         values to Decimal, and submits each chunk via batch_write_item. Any
         UnprocessedItems are retried with exponential backoff up to MAX_RETRIES.
 
+        When ``idempotent`` is True, this uses the Idempotent_Upsert write mode
+        required by the roll-forward path (Requirements 2.3, 2.4): each item is
+        compared against the currently stored item and only written if it is
+        new or its attributes changed (put-if-changed). This path NEVER deletes
+        items, so re-running with the same reference date is a no-op. Batch
+        chunking and exponential backoff are unchanged.
+
         Args:
             items: List of item dicts to write. Each dict represents a single
                 DynamoDB item with attribute names as keys. Float values are
                 automatically converted to Decimal before writing.
+            idempotent: When True, only write new or changed items (put-if-changed)
+                and never delete. When False (default), write every item.
 
         Returns:
-            A dict with counts: {"success": N, "failed": N} representing
-            how many items were successfully written vs failed after retries.
+            A dict with counts: {"success": N, "failed": N, "skipped": N,
+            "readback_fallback": N}. "success" counts items written, "failed"
+            counts items that failed after retries, "skipped" counts unchanged
+            items skipped in idempotent mode (always 0 in plain write mode), and
+            "readback_fallback" counts items written because their idempotent
+            read-back could not be completed (0 on the healthy path).
         """
+        items_to_write = items
+        if idempotent:
+            # Filter out items whose stored copy is byte-for-byte equivalent so
+            # a re-run with the same reference date results in no net change.
+            items_to_write = self._filter_changed_items(items)
+
         # Split items into chunks of 25 (BatchWriteItem limit)
         chunks = [
-            items[i : i + BATCH_WRITE_SIZE]
-            for i in range(0, len(items), BATCH_WRITE_SIZE)
+            items_to_write[i : i + BATCH_WRITE_SIZE]
+            for i in range(0, len(items_to_write), BATCH_WRITE_SIZE)
         ]
 
         for chunk_index, chunk in enumerate(chunks):
             self._write_batch(chunk, chunk_index)
 
         logger.info(
-            "Completed writing to %s: %d succeeded, %d failed",
+            "Completed writing to %s: %d succeeded, %d failed, %d skipped, "
+            "%d read-back-fallback (idempotent=%s)",
             self.table_name,
             self.success_count,
             self.failure_count,
+            self.skipped_count,
+            self.readback_fallback_count,
+            idempotent,
         )
 
-        return {"success": self.success_count, "failed": self.failure_count}
+        return {
+            "success": self.success_count,
+            "failed": self.failure_count,
+            "skipped": self.skipped_count,
+            "readback_fallback": self.readback_fallback_count,
+        }
+
+    def _get_key_attributes(self) -> List[str]:
+        """Resolve and cache the table's key attribute names.
+
+        Reads the table's KeySchema once (partition key plus optional sort key)
+        so idempotent-upsert mode can build each item's primary key for the
+        read-back comparison.
+
+        Returns:
+            Ordered list of key attribute names (partition key first, then the
+            sort key if the table has one).
+        """
+        if self._key_attributes is None:
+            table = _dynamodb.Table(self.table_name)
+            self._key_attributes = [
+                key["AttributeName"] for key in table.key_schema
+            ]
+        return self._key_attributes
+
+    def _filter_changed_items(
+        self, items: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Return only items that are new or changed vs their stored copy.
+
+        Implements put-if-changed for the Idempotent_Upsert write mode. Reads
+        each item's current stored version via BatchGetItem (in chunks) and
+        compares it (after float->Decimal conversion, matching what would be
+        written) against the incoming item. Unchanged items are counted as
+        skipped and dropped; new or changed items are returned for writing.
+        This path never deletes.
+
+        Args:
+            items: The full list of candidate item dicts to upsert.
+
+        Returns:
+            The subset of items that are new or differ from their stored copy.
+        """
+        if not items:
+            return []
+
+        key_attributes = self._get_key_attributes()
+        # Convert up front so the comparison matches exactly what would be stored.
+        converted_items = [convert_floats_to_decimal(item) for item in items]
+
+        existing_by_key = self._batch_get_existing(converted_items, key_attributes)
+
+        changed_items: List[Dict[str, Any]] = []
+        for item in converted_items:
+            key_tuple = self._item_key_tuple(item, key_attributes)
+            stored = existing_by_key.get(key_tuple)
+            if stored is not None and stored == item:
+                # Stored copy is identical - skip to keep the re-run a no-op.
+                self.skipped_count += 1
+            else:
+                changed_items.append(item)
+
+        return changed_items
+
+    def _item_key_tuple(
+        self, item: Dict[str, Any], key_attributes: List[str]
+    ) -> Tuple[Any, ...]:
+        """Build a hashable primary-key tuple for an item.
+
+        Args:
+            item: A DynamoDB item dict.
+            key_attributes: Ordered key attribute names for the table.
+
+        Returns:
+            Tuple of the item's key attribute values, usable as a dict key.
+        """
+        return tuple(item.get(attr) for attr in key_attributes)
+
+    def _batch_get_existing(
+        self, items: List[Dict[str, Any]], key_attributes: List[str]
+    ) -> Dict[Tuple[Any, ...], Dict[str, Any]]:
+        """Read the currently stored version of each item via BatchGetItem.
+
+        Chunks the keys into BATCH_WRITE_SIZE groups (the BatchGetItem limit is
+        100, but reusing the batch size keeps requests small and consistent),
+        handles UnprocessedKeys with exponential backoff, and returns a lookup
+        from key tuple to stored item. Missing items simply have no entry.
+
+        Args:
+            items: The (already converted) items whose stored versions to fetch.
+            key_attributes: Ordered key attribute names for the table.
+
+        Returns:
+            Dict mapping each item's key tuple to its stored item dict. Items
+            that do not yet exist are absent from the map.
+        """
+        existing_by_key: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
+
+        key_chunks = [
+            items[i : i + BATCH_WRITE_SIZE]
+            for i in range(0, len(items), BATCH_WRITE_SIZE)
+        ]
+
+        for chunk in key_chunks:
+            keys = [
+                {attr: item[attr] for attr in key_attributes} for item in chunk
+            ]
+            request_items: Dict[str, Any] = {self.table_name: {"Keys": keys}}
+            attempt = 0
+
+            while request_items:
+                try:
+                    response = _dynamodb.meta.client.batch_get_item(
+                        RequestItems=request_items
+                    )
+                except ClientError as error:
+                    error_code = error.response["Error"]["Code"]
+                    # Retry the read-back a bounded number of times before
+                    # falling back. A transient throttle/service blip should not
+                    # silently convert idempotent-upsert into a full rewrite
+                    # (review finding CR-6); only give up after MAX_RETRIES.
+                    attempt += 1
+                    if attempt < MAX_RETRIES:
+                        delay_ms = min(
+                            BACKOFF_BASE_MS * (2 ** attempt), BACKOFF_MAX_MS
+                        )
+                        logger.warning(
+                            "DynamoDB batch_get_item error for table %s during "
+                            "idempotent read-back (attempt %d/%d): %s - %s; "
+                            "retrying in %dms",
+                            self.table_name,
+                            attempt,
+                            MAX_RETRIES,
+                            error_code,
+                            error.response["Error"]["Message"],
+                            delay_ms,
+                        )
+                        time.sleep(delay_ms / 1000.0)
+                        continue
+                    # Retries exhausted: fail open (treat the unread keys as
+                    # changed so they get written) but record the degradation
+                    # distinctly so it is not mistaken for genuine changes.
+                    unread_count = sum(
+                        len(entry["Keys"]) for entry in request_items.values()
+                    )
+                    self.readback_fallback_count += unread_count
+                    logger.warning(
+                        "DynamoDB batch_get_item failed for table %s after %d "
+                        "attempts (%s: %s); idempotent read-back degraded to a "
+                        "full write for %d item(s) in this batch.",
+                        self.table_name,
+                        attempt,
+                        error_code,
+                        error.response["Error"]["Message"],
+                        unread_count,
+                    )
+                    break
+
+                for stored in response.get("Responses", {}).get(
+                    self.table_name, []
+                ):
+                    key_tuple = self._item_key_tuple(stored, key_attributes)
+                    existing_by_key[key_tuple] = stored
+
+                unprocessed = response.get("UnprocessedKeys", {})
+                if not unprocessed:
+                    break
+
+                attempt += 1
+                if attempt >= MAX_RETRIES:
+                    unread_count = sum(
+                        len(entry["Keys"]) for entry in unprocessed.values()
+                    )
+                    self.readback_fallback_count += unread_count
+                    logger.warning(
+                        "Max retries reached reading existing items from %s; "
+                        "%d remaining key(s) treated as changed (idempotent "
+                        "read-back degraded to a full write for them).",
+                        self.table_name,
+                        unread_count,
+                    )
+                    break
+
+                delay_ms = min(BACKOFF_BASE_MS * (2 ** attempt), BACKOFF_MAX_MS)
+                time.sleep(delay_ms / 1000.0)
+                request_items = unprocessed
+
+        return existing_by_key
 
     def _write_batch(self, chunk: List[Dict[str, Any]], chunk_index: int) -> None:
         """Write a single batch of up to 25 items with retry on UnprocessedItems.

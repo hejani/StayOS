@@ -539,6 +539,8 @@ async def _idle_monitor(
         websocket: The WebSocket connection to close on timeout.
     """
     try:
+        # nosemgrep: is-function-without-parentheses -- is_stream_active is a
+        # bool dataclass field (see SessionContext), not a method.
         while session.context.is_stream_active:
             await asyncio.sleep(IDLE_CHECK_INTERVAL_SECONDS)
 
@@ -599,6 +601,7 @@ async def _cleanup_session(
     )
 
     # Close the Nova Sonic stream if still active
+    # nosemgrep: is-function-without-parentheses -- bool field, not a method.
     if session.context.is_stream_active:
         await session.close()
 

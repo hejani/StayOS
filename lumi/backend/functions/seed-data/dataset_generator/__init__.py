@@ -18,6 +18,7 @@ Modules:
     writer: BatchWriteItem utility with exponential backoff on UnprocessedItems.
 """
 
+from dataset_generator.reference_date import resolve_reference_date
 from dataset_generator.rooms_generator import generate_rooms, reconcile_room_status
 from dataset_generator.guests_generator import generate_guests
 from dataset_generator.revenue_generator import generate_revenue
@@ -32,5 +33,6 @@ __all__ = [
     "generate_reservations",
     "generate_work_orders",
     "reconcile_room_status",
+    "resolve_reference_date",
     "BatchWriter",
 ]

@@ -27,7 +27,7 @@ consistency via valid room references), and REQ-DS-8 (deterministic generation).
 import logging
 import time
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from dataset_generator.config import (
     MAINTENANCE_TEAM,
@@ -38,6 +38,7 @@ from dataset_generator.config import (
     WORK_ORDER_CATEGORIES,
     WORK_ORDER_NOTES,
 )
+from dataset_generator.reference_date import resolve_reference_date
 from dataset_generator.writer import BatchWriter
 
 logger = logging.getLogger(__name__)
@@ -324,6 +325,8 @@ def _compute_ttl(created_at: datetime) -> int:
 def generate_work_orders(
     writer: BatchWriter,
     rooms_lookup: Dict[str, List[Dict[str, Any]]],
+    reference_date: Optional[Union[str, date]] = None,
+    idempotent: bool = False,
 ) -> List[Dict[str, Any]]:
     """Generate lifecycle-aware work orders for all 5 pilot properties.
 
@@ -343,18 +346,29 @@ def generate_work_orders(
         rooms_lookup: Dict keyed by propertyId, where each value is a list of
             room item dicts from generate_rooms(). Used to assign valid room
             numbers and determine premium status.
+        reference_date: The "today" the 30-day window and lifecycle status are
+            anchored to, as an ISO YYYY-MM-DD string or a date. Defaults to UTC
+            today when omitted so the whole window derives from this single
+            value (Requirement 2.1).
+        idempotent: When True, write via Idempotent_Upsert (put-if-changed,
+            never delete) so a roll-forward re-run is a no-op (Requirements
+            2.3, 2.4). When False (default), perform a plain full write.
 
     Returns:
         List of all generated work order dicts. Used by reconcile_room_status()
         to set OOO/MAINTENANCE status on affected rooms.
     """
-    today = date.today()
+    today = resolve_reference_date(reference_date)
     # 30-day window: from (today - 29 days) through today
     start_date = today - timedelta(days=SEED_DAYS - 1)
-    # Reference time: current moment for realistic status determination.
-    # Work orders created "in the future" (later today) are treated as OPEN,
-    # and recent HIGH/CRITICAL orders may still be IN_PROGRESS or OPEN.
-    reference_time = datetime.now().replace(second=0, microsecond=0)
+    # Reference time for lifecycle status: end of the reference date. Deriving
+    # this from reference_date (instead of the wall-clock datetime.now()) keeps
+    # generation fully deterministic (Requirement 2.5) so the same reference
+    # date always yields the same statuses. End-of-day means every work order
+    # created earlier today is already "created"; recent HIGH/CRITICAL orders
+    # whose resolution window has not yet elapsed remain OPEN/IN_PROGRESS,
+    # preserving the 2-4 OOO rooms guarantee.
+    reference_time = datetime(today.year, today.month, today.day, 23, 59, 0)
 
     all_work_orders: List[Dict[str, Any]] = []
 
@@ -468,12 +482,13 @@ def generate_work_orders(
         )
 
         # Write property work orders to DynamoDB
-        result = writer.write_items(property_work_orders)
+        result = writer.write_items(property_work_orders, idempotent=idempotent)
         logger.info(
-            "Work orders written for %s: %d succeeded, %d failed",
+            "Work orders written for %s: %d succeeded, %d failed, %d skipped",
             property_id,
             result["success"],
             result["failed"],
+            result["skipped"],
         )
 
         all_work_orders.extend(property_work_orders)

@@ -12,7 +12,8 @@ room lookup dict), and REQ-DS-8 (deterministic generation).
 
 import logging
 import os
-from typing import Any, Dict, List, Tuple
+from datetime import date
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import boto3
 from botocore.config import Config
@@ -24,6 +25,7 @@ from dataset_generator.config import (
     ROOM_TYPE_DISTRIBUTION,
     ROOM_TYPE_FLOOR_RANGES,
 )
+from dataset_generator.reference_date import resolve_reference_date
 from dataset_generator.writer import BatchWriter
 
 logger = logging.getLogger(__name__)
@@ -184,7 +186,11 @@ def _generate_room_number(floor: int, sequence: int) -> str:
     return str(floor * 100 + sequence)
 
 
-def generate_rooms(writer: BatchWriter) -> Dict[str, List[Dict[str, Any]]]:
+def generate_rooms(
+    writer: BatchWriter,
+    reference_date: Optional[Union[str, date]] = None,
+    idempotent: bool = False,
+) -> Dict[str, List[Dict[str, Any]]]:
     """Generate full room inventory for all 5 pilot properties.
 
     Iterates over PROPERTY_PROFILES and generates totalRooms items per property,
@@ -192,15 +198,36 @@ def generate_rooms(writer: BatchWriter) -> Dict[str, List[Dict[str, Any]]]:
     with AVAILABLE status. The returned lookup dict is used by reservations and
     work orders generators to reference valid room numbers.
 
+    Room inventory itself has no time-relative fields (every room starts
+    AVAILABLE and is later moved by reconcile_room_status). The reference_date
+    is accepted so every generator entry point shares one explicit anchor
+    contract (Requirement 2.1) and so the anchor the whole window derives from
+    is recorded for observability, even though room attributes do not vary by
+    date.
+
     Args:
         writer: BatchWriter instance configured for the stayos-rooms table.
             Used to write generated items to DynamoDB in batches of 25.
+        reference_date: The "today" the surrounding window is anchored to, as
+            an ISO YYYY-MM-DD string or a date. Defaults to UTC today when
+            omitted. Recorded for observability; room inventory is not
+            date-dependent.
+        idempotent: When True, write via Idempotent_Upsert (put-if-changed,
+            never delete) so a roll-forward re-run is a no-op (Requirements
+            2.3, 2.4). When False (default), perform a plain full write.
 
     Returns:
         Dict keyed by propertyId, where each value is a list of room item
         dicts. Each room dict contains all DynamoDB attributes for that room.
         Structure: Dict[str, List[Dict[str, Any]]]
     """
+    # Resolve the anchor so the whole generation run shares one explicit date.
+    resolved_reference_date = resolve_reference_date(reference_date)
+    logger.info(
+        "Generating room inventory anchored to reference date %s",
+        resolved_reference_date.isoformat(),
+    )
+
     rooms_lookup: Dict[str, List[Dict[str, Any]]] = {}
 
     for profile in PROPERTY_PROFILES:
@@ -264,12 +291,13 @@ def generate_rooms(writer: BatchWriter) -> Dict[str, List[Dict[str, Any]]]:
                 global_room_index += 1
 
         # Write all rooms for this property to DynamoDB
-        result = writer.write_items(property_rooms)
+        result = writer.write_items(property_rooms, idempotent=idempotent)
         logger.info(
-            "Room inventory written for %s: %d succeeded, %d failed",
+            "Room inventory written for %s: %d succeeded, %d failed, %d skipped",
             property_id,
             result["success"],
             result["failed"],
+            result["skipped"],
         )
 
         rooms_lookup[property_id] = property_rooms
@@ -286,12 +314,22 @@ def reconcile_room_status(
     work_orders: List[Dict[str, Any]],
     rooms_lookup: Dict[str, List[Dict[str, Any]]],
     table_name: str,
+    reference_date: Optional[Union[str, date]] = None,
 ) -> Dict[str, int]:
     """Update room statuses based on current reservations and work orders.
 
-    Called after all generators have run. Examines today's CHECKED_IN
-    reservations and OPEN/IN_PROGRESS work orders to set rooms to OCCUPIED,
-    OOO, or MAINTENANCE. Rooms not affected remain AVAILABLE.
+    Called after all generators have run. Examines the reference date's
+    CHECKED_IN reservations and OPEN/IN_PROGRESS work orders to set rooms to
+    OCCUPIED, OOO, or MAINTENANCE. Every other room is explicitly reset to
+    AVAILABLE (with a null guest and work order), so the reconciled state
+    depends only on the current reference date and not on any prior status the
+    table happened to hold - making reconciliation idempotent across
+    roll-forwards even when run after a prior reconcile (review finding CR-2).
+
+    The reservation statuses (CHECKED_IN "today") and work-order statuses
+    (OPEN/IN_PROGRESS) are already anchored to the reference date by their
+    respective generators, so reconciliation stays consistent with the
+    re-anchored window on each roll-forward (Requirement 2.1).
 
     Uses DynamoDB UpdateItem (not BatchWriteItem) since only specific
     attributes are being updated on existing items.
@@ -304,15 +342,28 @@ def reconcile_room_status(
         rooms_lookup: Dict keyed by propertyId mapping to lists of room items.
             Used to resolve room existence and premium status.
         table_name: Name of the stayos-rooms DynamoDB table to update.
+        reference_date: The "today" the reconciliation is anchored to, as an
+            ISO YYYY-MM-DD string or a date. Defaults to UTC today when omitted.
+            Recorded for observability; the reservation/work-order statuses it
+            reconciles are themselves derived from this same reference date.
 
     Returns:
         Dict with update counts: {"occupied": N, "ooo": N, "maintenance": N,
-        "errors": N} representing how many rooms were updated per status.
+        "available": N, "errors": N} representing how many rooms were updated
+        per status. "available" counts rooms explicitly reset because they have
+        no active reservation or work order this reference date.
     """
+    resolved_reference_date = resolve_reference_date(reference_date)
+    logger.info(
+        "Reconciling room status for reference date %s",
+        resolved_reference_date.isoformat(),
+    )
+
     update_counts: Dict[str, int] = {
         "occupied": 0,
         "ooo": 0,
         "maintenance": 0,
+        "available": 0,
         "errors": 0,
     }
 
@@ -375,6 +426,38 @@ def reconcile_room_status(
             "currentWorkOrderId": None,
         }
 
+    # Reset every room with no active reservation/work order back to AVAILABLE
+    # (review finding CR-2). Without this, a room set OCCUPIED/OOO/MAINTENANCE on
+    # a previous roll-forward keeps that stale status forever, because the loops
+    # above only ever write rooms that CURRENTLY have an active res/WO. Emitting
+    # an explicit reset makes reconcile_room_status deterministic and idempotent:
+    # the resulting stayos-rooms state depends only on the current reference
+    # date's reservations/work orders, not on whatever the table held before.
+    #
+    # rooms_lookup is the authoritative list of every generated room, so any
+    # (propertyId, roomNumber) not already claimed above is, by definition, not
+    # occupied and not under an active work order this reference date.
+    reset_count = 0
+    for property_id, property_rooms in rooms_lookup.items():
+        for room in property_rooms:
+            room_number = room.get("roomNumber", "")
+            if not room_number:
+                continue
+            key = (property_id, room_number)
+            if key in status_updates:
+                continue
+            status_updates[key] = {
+                "status": "AVAILABLE",
+                "currentGuestId": None,
+                "currentWorkOrderId": None,
+            }
+            reset_count += 1
+
+    logger.info(
+        "Rooms with no active reservation/work order to reset to AVAILABLE: %d",
+        reset_count,
+    )
+
     # Apply all updates via DynamoDB UpdateItem
     for (property_id, room_number), update_data in status_updates.items():
         new_status = update_data["status"]
@@ -416,6 +499,8 @@ def reconcile_room_status(
                 update_counts["ooo"] += 1
             elif new_status == "MAINTENANCE":
                 update_counts["maintenance"] += 1
+            elif new_status == "AVAILABLE":
+                update_counts["available"] += 1
 
         except ClientError as error:
             error_code = error.response["Error"]["Code"]
@@ -430,10 +515,11 @@ def reconcile_room_status(
 
     logger.info(
         "Room status reconciliation complete: %d occupied, %d ooo, "
-        "%d maintenance, %d errors",
+        "%d maintenance, %d available, %d errors",
         update_counts["occupied"],
         update_counts["ooo"],
         update_counts["maintenance"],
+        update_counts["available"],
         update_counts["errors"],
     )
 

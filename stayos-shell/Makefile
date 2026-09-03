@@ -77,7 +77,7 @@ invalidate-cdn:
 			--stack-name $(STACK_NAME) \
 			--query "Stacks[0].Outputs[?OutputKey=='FrontendDistributionId'].OutputValue" \
 			--output text) \
-		--paths "/" "/index.html" "/_next/*" "/favicon.svg" > /dev/null
+		--paths "/" "/index.html" "/_next/*" "/favicon.svg" "/logo.svg" > /dev/null
 	@echo "    done"
 
 # ─── Testing / lint ───────────────────────────────────────────────────────────

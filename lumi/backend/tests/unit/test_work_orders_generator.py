@@ -5,34 +5,11 @@ resolution lifecycle, room selection, issue type rotation, and the full
 generate_work_orders function.
 """
 
-import sys
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List
 from unittest.mock import MagicMock
 
 import pytest
-
-# Stub out generator modules that don't exist yet so dataset_generator.__init__
-# can be imported without errors during incremental development.
-for _mod_name in (
-    "dataset_generator.guests_generator",
-    "dataset_generator.revenue_generator",
-    "dataset_generator.reservations_generator",
-):
-    if _mod_name not in sys.modules:
-        sys.modules[_mod_name] = MagicMock()
-
-# If a previous test file stubbed work_orders_generator with a MagicMock,
-# remove that stub so we can import the real module here.
-_wo_mod_name = "dataset_generator.work_orders_generator"
-if _wo_mod_name in sys.modules and isinstance(
-    sys.modules[_wo_mod_name], MagicMock
-):
-    del sys.modules[_wo_mod_name]
-    if "dataset_generator" in sys.modules and isinstance(
-        sys.modules["dataset_generator"], MagicMock
-    ):
-        del sys.modules["dataset_generator"]
 
 from dataset_generator.config import (
     MAINTENANCE_TEAM,
@@ -412,7 +389,11 @@ class TestGenerateWorkOrders:
     def setup_method(self) -> None:
         """Create mock writer and rooms lookup for each test."""
         self.mock_writer = MagicMock()
-        self.mock_writer.write_items.return_value = {"success": 25, "failed": 0}
+        self.mock_writer.write_items.return_value = {
+            "success": 25,
+            "failed": 0,
+            "skipped": 0,
+        }
         self.rooms_lookup = self._make_rooms_lookup()
 
     def test_returns_list_of_dicts(self) -> None:

@@ -62,6 +62,86 @@ MAX_ITEMS_PER_TABLE = 50000
 # Keeps individual scan calls bounded to avoid read-capacity spikes.
 SCAN_PAGE_LIMIT = 500
 
+# ---------------------------------------------------------------------------
+# Destructive-operation guard (Requirement 8.1, 8.2)
+# ---------------------------------------------------------------------------
+# The bulk table-clear reseed (_clear_tables) is destructive. Requirement 8.1
+# forbids the scheduled/automated roll-forward path from ever invoking it, and
+# Requirement 8.2 requires the Force reseed to be reachable ONLY via explicit
+# manual invocation AND explicit confirmation.
+#
+# Gating is therefore two-factor and fail-closed:
+#   1. Force               - the event MUST carry Force == True.
+#   2. ConfirmClear token  - the event MUST carry a confirmation token that
+#                            EXACTLY matches CLEAR_CONFIRMATION_TOKEN.
+#
+# A scheduled EventBridge Scheduler trigger and the orchestrator's upsert-only
+# roll-forward path send NEITHER field, so they can never satisfy the guard.
+# CloudFormation Create/Update events likewise never send them, so a normal
+# deploy is upsert-only. Only a deliberate, hand-crafted manual invocation
+# (e.g. `aws lambda invoke` / `make reseed`) that sets BOTH fields clears data.
+#
+# The token is intentionally an explicit literal (not a random value): a demo
+# operator must type it on purpose, which is the "explicit confirmation" the
+# requirement calls for. It is NOT a secret and NOT read from the environment,
+# so a misconfigured environment variable can never silently authorize a wipe.
+CLEAR_CONFIRMATION_TOKEN = "CONFIRM-CLEAR-TABLES"
+
+# Event field names carrying the two-factor destructive-op confirmation.
+FORCE_FIELD = "Force"
+CONFIRM_CLEAR_FIELD = "ConfirmClear"
+
+
+def _is_clear_authorized(event: Dict[str, Any]) -> bool:
+    """Decide whether a bulk table-clear is explicitly authorized.
+
+    Implements the two-factor, fail-closed destructive-op guard (Requirements
+    8.1, 8.2). A clear is authorized ONLY when the event carries both an
+    explicit ``Force`` flag set to boolean ``True`` AND a ``ConfirmClear``
+    token that exactly matches :data:`CLEAR_CONFIRMATION_TOKEN`.
+
+    The scheduled roll-forward path and CloudFormation Create/Update events
+    never send either field, so this function returns ``False`` for them and
+    the seed path stays upsert-only. A ``Force`` flag without the matching
+    confirmation token is rejected (returns ``False``) so a partial/accidental
+    force can never wipe data.
+
+    Args:
+        event: The Lambda invocation event.
+
+    Returns:
+        ``True`` only when both factors are present and valid; ``False``
+        otherwise.
+    """
+    force = event.get(FORCE_FIELD, False)
+    confirm = event.get(CONFIRM_CLEAR_FIELD)
+
+    # Factor 1: Force must be a real boolean True (not a truthy string), so an
+    # accidental "Force": "false" or "Force": 0 cannot authorize a wipe.
+    if force is not True:
+        return False
+
+    # Factor 2: the confirmation token must match exactly. A Force without a
+    # valid confirmation token is a misuse - log it and refuse.
+    if confirm != CLEAR_CONFIRMATION_TOKEN:
+        logger.warning(
+            "Force reseed requested WITHOUT valid confirmation token - refusing "
+            "to clear tables (destructive-op guard, Requirement 8.2)",
+            extra={
+                "force": force,
+                "confirmation_present": confirm is not None,
+                "request_type": event.get("RequestType", "DirectInvoke"),
+            },
+        )
+        return False
+
+    logger.info(
+        "Destructive clear authorized via explicit manual invocation with "
+        "confirmation token (Requirement 8.2)",
+        extra={"request_type": event.get("RequestType", "DirectInvoke")},
+    )
+    return True
+
 
 def _tables_already_seeded(table_names: List[str]) -> bool:
     """Check if any of the dataset tables already contain data.
@@ -369,11 +449,15 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> None:
                 ]
 
                 # Idempotency check: skip if any table already has data
-                # (unless Force=true was passed for explicit reseed)
-                force_reseed = event.get("Force", False)
+                # (unless an authorized manual Force reseed was requested).
+                # The destructive clear is two-factor gated (Requirement 8.2):
+                # it requires BOTH Force=True AND a matching ConfirmClear token.
+                # The scheduled roll-forward path and CFN deploys send neither,
+                # so they are always upsert-only (Requirement 8.1).
+                force_reseed = _is_clear_authorized(event)
                 if force_reseed:
                     logger.info(
-                        "Force reseed requested - clearing existing dataset tables"
+                        "Authorized Force reseed - clearing existing dataset tables"
                     )
                     cleared = _clear_tables(dataset_table_names)
                     logger.info(

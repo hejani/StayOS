@@ -12,11 +12,26 @@ botocore>=1.34.0
 
 # Smithy-based SDK for InvokeModelWithBidirectionalStream (Nova Sonic)
 # Experimental package for bidirectional audio streaming with amazon.nova-2-sonic-v1:0
-aws-sdk-bedrock-runtime>=0.7.0,<1.0.0
+#
+# PINNED to an exact version: this is a pre-1.0 experimental SDK whose public API
+# changes between minor releases. The code imports `Config` from
+# `aws_sdk_bedrock_runtime.config` and `BedrockRuntimeClient` /
+# `InvokeModelWithBidirectionalStreamOperationInput` from `aws_sdk_bedrock_runtime.client`.
+# Those symbols exist only through 0.7.0: 0.8.0/0.9.0 drop `BedrockRuntimeClient`,
+# and 0.10.0 removes `Config` (renamed to AsyncBedrockRuntimeConfig). An open
+# range let the container build resolve 0.10.0, crashing on startup with
+# "ImportError: cannot import name 'Config'". Do NOT loosen this without
+# re-verifying every aws_sdk_bedrock_runtime import in nova_sonic_session.py.
+aws-sdk-bedrock-runtime==0.7.0
 
-# Required by aws-sdk-bedrock-runtime for AWS credential and auth resolution
-smithy-aws-core>=0.0.2
-smithy-core>=0.0.2
+# Required by aws-sdk-bedrock-runtime for AWS credential and auth resolution.
+# Pinned to match aws-sdk-bedrock-runtime==0.7.0's own constraints
+# (smithy-aws-core[eventstream,json]~=0.7.0, smithy-core~=0.6.0). The code imports
+# EnvironmentCredentialsResolver from smithy_aws_core.identity.environment, which
+# is present in smithy-aws-core 0.7.x. Open ranges here previously allowed an
+# incompatible smithy version to be resolved alongside the SDK.
+smithy-aws-core[eventstream,json]==0.7.0
+smithy-core==0.6.0
 
 # Structured logging (Powertools Logger works outside Lambda context)
 # Provides structured JSON logging with context enrichment for CloudWatch Logs

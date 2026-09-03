@@ -16,11 +16,11 @@ import moto
 import pytest
 
 from seed_data import (
-    DEMO_PASSWORD,
     GM_SEED_DATA,
     provision_cognito_users,
     seed_settings_table,
 )
+from seed_data import DEMO_PASSWORD_ENV, _get_demo_password
 
 # Import seed-data lambda_function explicitly to avoid collision with api/lambda_function
 _SEED_DATA_DIR = str(Path(__file__).resolve().parents[2] / "functions" / "seed-data")
@@ -438,3 +438,33 @@ def test_gm_seed_data_region_distribution() -> None:
     assert japan_count == 1, f"Expected 1 Japan property, got {japan_count}"
     assert europe_count == 1, f"Expected 1 Europe property, got {europe_count}"
     assert india_count == 1, f"Expected 1 India property, got {india_count}"
+
+
+
+# ---------------------------------------------------------------------------
+# _get_demo_password (Env-1: lazy DEMO_PASSWORD read)
+# ---------------------------------------------------------------------------
+
+
+class TestGetDemoPassword:
+    """The demo password is read lazily from the environment at call time."""
+
+    def test_returns_env_value_when_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When DEMO_PASSWORD is set, the value is returned verbatim."""
+        monkeypatch.setenv(DEMO_PASSWORD_ENV, "SuperSecret!123")
+        assert _get_demo_password() == "SuperSecret!123"
+
+    def test_raises_keyerror_with_context_when_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When DEMO_PASSWORD is absent, a clear KeyError is raised at call time.
+
+        Env-1: reading lazily means module import never requires the variable,
+        but the one function that needs it fails loudly (naming AppPassword) if
+        it is missing at runtime.
+        """
+        monkeypatch.delenv(DEMO_PASSWORD_ENV, raising=False)
+        with pytest.raises(KeyError) as exc_info:
+            _get_demo_password()
+        assert DEMO_PASSWORD_ENV in str(exc_info.value)
+        assert "AppPassword" in str(exc_info.value)

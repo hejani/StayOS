@@ -5,36 +5,12 @@ ADR calculation, RevPAR derivation, comparison deltas, arrivals/departures,
 upsell metrics, and TTL calculation.
 """
 
-import importlib
-import sys
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Dict, List
 from unittest.mock import MagicMock
 
 import pytest
-
-# Stub out generator modules that don't exist yet so dataset_generator.__init__
-# can be imported without errors during incremental development.
-for _mod_name in (
-    "dataset_generator.reservations_generator",
-    "dataset_generator.work_orders_generator",
-):
-    if _mod_name not in sys.modules:
-        sys.modules[_mod_name] = MagicMock()
-
-# If a previous test file stubbed revenue_generator with a MagicMock,
-# remove that stub so we can import the real module here.
-_revenue_mod_name = "dataset_generator.revenue_generator"
-if _revenue_mod_name in sys.modules and isinstance(
-    sys.modules[_revenue_mod_name], MagicMock
-):
-    del sys.modules[_revenue_mod_name]
-    # Also remove the parent package cache so it re-resolves the attribute
-    if "dataset_generator" in sys.modules and isinstance(
-        sys.modules["dataset_generator"], MagicMock
-    ):
-        del sys.modules["dataset_generator"]
 
 from dataset_generator.config import (
     ADR_OFFSETS,
@@ -453,12 +429,21 @@ class TestGenerateRevenue:
     def setup_method(self) -> None:
         """Create a mock writer for each test."""
         self.mock_writer = MagicMock()
-        self.mock_writer.write_items.return_value = {"success": 150, "failed": 0}
+        self.mock_writer.write_items.return_value = {
+            "success": 150,
+            "failed": 0,
+            "skipped": 0,
+        }
 
-    def test_returns_150_items(self) -> None:
-        """Generates exactly 150 items (5 properties * 30 days)."""
+    def test_returns_160_items(self) -> None:
+        """Generates exactly 160 items (5 properties * 32 days).
+
+        The window is 32 days per property (SEED_DAYS historical days plus
+        today and tomorrow) so the orchestrator always finds revenue for
+        today/tomorrow regardless of when the seeder last ran (Requirement 2.2).
+        """
         result = generate_revenue(self.mock_writer)
-        assert len(result) == 150
+        assert len(result) == 160
 
     def test_all_properties_represented(self) -> None:
         """All 5 properties appear in the results."""
@@ -467,14 +452,14 @@ class TestGenerateRevenue:
         expected = {p["propertyId"] for p in PROPERTY_PROFILES}
         assert property_ids == expected
 
-    def test_30_days_per_property(self) -> None:
-        """Each property has exactly 30 day entries."""
+    def test_32_days_per_property(self) -> None:
+        """Each property has exactly 32 day entries (SEED_DAYS + today + tomorrow)."""
         result = generate_revenue(self.mock_writer)
         for profile in PROPERTY_PROFILES:
             prop_items = [
                 v for k, v in result.items() if k[0] == profile["propertyId"]
             ]
-            assert len(prop_items) == SEED_DAYS
+            assert len(prop_items) == SEED_DAYS + 2
 
     def test_item_has_all_required_fields(self) -> None:
         """Each revenue item contains all required DynamoDB attributes."""
@@ -529,19 +514,26 @@ class TestGenerateRevenue:
             assert item["availableRooms"] == property_rooms[prop_id]
 
     def test_writer_called_once(self) -> None:
-        """Writer.write_items is called once with all 150 items."""
+        """Writer.write_items is called once with all 160 items."""
         generate_revenue(self.mock_writer)
         assert self.mock_writer.write_items.call_count == 1
-        # Verify it was called with a list of 150 items
+        # Verify it was called with a list of 160 items (5 properties * 32 days)
         call_args = self.mock_writer.write_items.call_args[0][0]
-        assert len(call_args) == 150
+        assert len(call_args) == 160
 
-    def test_dates_cover_30_day_window(self) -> None:
-        """Generated dates span from today-29 through today."""
-        result = generate_revenue(self.mock_writer)
-        today = date.today()
+    def test_dates_cover_window_relative_to_reference_date(self) -> None:
+        """Generated dates span today-29 through today+2, anchored to reference_date.
+
+        The generator derives its whole 32-day window from the explicit
+        reference_date (Requirement 2.1), so passing a fixed date makes the
+        assertion deterministic rather than depending on wall-clock today.
+        """
+        reference_date = date(2026, 8, 15)
+        result = generate_revenue(self.mock_writer, reference_date=reference_date)
+        start_date = reference_date - timedelta(days=SEED_DAYS - 1)
         expected_dates = {
-            (today - timedelta(days=i)).isoformat() for i in range(SEED_DAYS)
+            (start_date + timedelta(days=i)).isoformat()
+            for i in range(SEED_DAYS + 2)
         }
         chicago_dates = {
             key[1] for key in result.keys() if key[0] == "ALOHA-CHI-001"

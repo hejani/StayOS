@@ -43,9 +43,44 @@
   single client-side auth module shared by the shell, LUMI, and PULSE (Cognito
   sign-in/refresh, JWT decode, and the `localStorage` `stayos.*` session that
   powers SSO). Consumed via a build-time TypeScript path alias.
+- [shared/data-orchestrator/infrastructure/data-orchestrator.yaml](shared/data-orchestrator/infrastructure/data-orchestrator.yaml):
+  the Unified Data Orchestrator nested stack (`StackPrefix` `stayos-data`) — the
+  `stayos-data-orchestrator` Step Functions state machine
+  (Quiesce -> Generate -> Reconcile -> UnQuiesce -> RegenerateBrief -> PrimeBaseline)
+  plus one per-property EventBridge Scheduler rule that rolls the demo dataset
+  forward at each property's local midnight.
+- [shared/data-orchestrator/handlers/generate_handler.py](shared/data-orchestrator/handlers/generate_handler.py):
+  the Generate step Lambda — re-anchors the deterministic 30-day window to a new
+  `Reference_Date` and idempotently upserts it (reuses the LUMI generators; never
+  bulk-deletes on the scheduled path).
+- [shared/data-orchestrator/handlers/prime_baseline_handler.py](shared/data-orchestrator/handlers/prime_baseline_handler.py):
+  the PrimeBaseline step Lambda — invokes the PULSE baseline builder after
+  un-quiesce to seed the ambient curated PULSE feed.
+
+## Shared data seams (PULSE-owned, orchestrator-consumed)
+
+- [pulse/backend/src/pulse/baseline/builder.py](pulse/backend/src/pulse/baseline/builder.py):
+  the curated PULSE baseline builder — deterministic, bounded reset-then-prime of
+  `pulse-alerts` items (`baselineManaged = True`, `baseline#` dedupe prefix) so a
+  presenter opens PULSE to a predictable ambient feed.
+- [pulse/backend/src/pulse/rule_engine/quiesce.py](pulse/backend/src/pulse/rule_engine/quiesce.py):
+  the PULSE quiesce seam — bounded, reversible suppression of rule-engine stream
+  consumption during the bulk roll-forward, called by the orchestrator's
+  Quiesce/UnQuiesce steps.
+- [pulse/backend/src/pulse/demo_simulator/simulator.py](pulse/backend/src/pulse/demo_simulator/simulator.py):
+  the demo scenario simulator behind the presenter live-fire routes
+  (`POST /demo/scenarios/{scenarioId}` + `/reset`, gated by `EnableDemoSimulator`)
+  — deterministic scenario catalog, variant-scoped runs, and reset.
 
 ## Docs
 
+- [docs/data-model.md](docs/data-model.md): canonical platform-wide DynamoDB
+  data-model reference (LUMI + PULSE tables, keys/GSIs, volumes) plus the
+  Unified Data Orchestrator note — how the demo data is seeded, rolled forward,
+  quiesced, baselined, and fired live on stage.
+- [docs/review-2026-08-31.md](docs/review-2026-08-31.md): end-to-end review report
+  for the `security-fixes` branch — test-suite results, 8 code-review findings
+  (4 P1 / 4 P2), CloudFormation lint, and the performance-harness contract.
 - [openapi.yaml](openapi.yaml): StayOS REST API spec — currently the PULSE
   real-time alerts API (LUMI's REST spec is in [lumi/openapi.yaml](lumi/openapi.yaml)).
 - [AGENTS.md](AGENTS.md): root contributor/agent guide — repo-wide safety,

@@ -18,7 +18,7 @@ and REQ-DS-9 (cross-table consistency via guest lookup dict).
 
 import logging
 from datetime import date, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from dataset_generator.config import (
     CORPORATE_ACCOUNTS,
@@ -31,6 +31,7 @@ from dataset_generator.config import (
     STAY_COUNT_RANGES,
     VIP_NAME_POOL,
 )
+from dataset_generator.reference_date import resolve_reference_date
 from dataset_generator.writer import BatchWriter
 
 logger = logging.getLogger(__name__)
@@ -259,7 +260,11 @@ def _compute_last_stay_date(guest_index: int, base_date: date) -> str:
     return stay_date.isoformat()
 
 
-def generate_guests(writer: BatchWriter) -> Dict[str, List[Dict[str, Any]]]:
+def generate_guests(
+    writer: BatchWriter,
+    reference_date: Optional[Union[str, date]] = None,
+    idempotent: bool = False,
+) -> Dict[str, List[Dict[str, Any]]]:
     """Generate 50 VIP guest profiles per property (250 total) and write to DynamoDB.
 
     Iterates over all PROPERTY_PROFILES and for each property generates 50
@@ -273,14 +278,20 @@ def generate_guests(writer: BatchWriter) -> Dict[str, List[Dict[str, Any]]]:
     Args:
         writer: BatchWriter instance configured for the stayos-guests table.
             Used to write generated items to DynamoDB in batches of 25.
+        reference_date: The "today" used to anchor lastStayDate calculations,
+            as an ISO YYYY-MM-DD string or a date. Defaults to UTC today when
+            omitted so the whole window derives from this value (Requirement 2.1).
+        idempotent: When True, write via Idempotent_Upsert (put-if-changed,
+            never delete) so a roll-forward re-run is a no-op (Requirements
+            2.3, 2.4). When False (default), perform a plain full write.
 
     Returns:
         Dict keyed by propertyId, where each value is a list of 50 guest
         item dicts. Each guest dict contains all DynamoDB attributes.
         Structure: Dict[str, List[Dict[str, Any]]]
     """
-    # Use today as the base date for lastStayDate calculations
-    base_date = date.today()
+    # Anchor lastStayDate calculations to the resolved reference date
+    base_date = resolve_reference_date(reference_date)
     guests_lookup: Dict[str, List[Dict[str, Any]]] = {}
 
     for profile in PROPERTY_PROFILES:
@@ -331,12 +342,13 @@ def generate_guests(writer: BatchWriter) -> Dict[str, List[Dict[str, Any]]]:
             property_guests.append(guest_item)
 
         # Write all 50 guests for this property to DynamoDB
-        result = writer.write_items(property_guests)
+        result = writer.write_items(property_guests, idempotent=idempotent)
         logger.info(
-            "Guest profiles written for %s: %d succeeded, %d failed",
+            "Guest profiles written for %s: %d succeeded, %d failed, %d skipped",
             property_id,
             result["success"],
             result["failed"],
+            result["skipped"],
         )
 
         guests_lookup[property_id] = property_guests
