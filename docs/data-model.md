@@ -19,13 +19,16 @@ properties) except `stayos-settings` (by `gmAlias`), `pulse-alerts` /
 `gmAlias`).
 
 > **Physical table naming.** LUMI's DynamoDB tables are defined in
-> `lumi/infrastructure/nested-stacks/data.yaml` with a `StackPrefix` of `lumi`,
-> so the **deployed physical names are `lumi-rooms`, `lumi-guests`,
-> `lumi-reservations`, `lumi-revenues`, `lumi-work-orders`, `lumi-briefs`, and
-> `lumi-settings`**. The `stayos-*` names used throughout this document (and in
-> some code comments/defaults) are the logical/legacy naming; when inspecting
-> the account, look for the `lumi-*` tables. PULSE tables use `StackPrefix`
-> `pulse` and are physically named `pulse-*` as shown.
+> `lumi/infrastructure/nested-stacks/data.yaml` with a `StackPrefix` **parameter**
+> (its template *default* is `lumi`, but the actual deploy overrides it). The
+> live prototype deployment in account `REDACTED` (us-east-1) is
+> parameterized with `StackPrefix=stayos`, so the **deployed physical names are
+> `stayos-rooms`, `stayos-guests`, `stayos-reservations`, `stayos-revenues`,
+> `stayos-work-orders`, `stayos-briefs`, and `stayos-settings`** — matching the
+> `stayos-*` names used throughout this document. Because the prefix is a stack
+> parameter, a deployment that accepts the template default would instead produce
+> `lumi-*` names; always confirm the `StackPrefix` used for a given environment.
+> PULSE tables use `StackPrefix` `pulse` and are physically named `pulse-*`.
 
 ---
 
