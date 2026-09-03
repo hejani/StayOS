@@ -22,6 +22,49 @@ VALID_ALERT_TOGGLE_KEYS = {
 TIME_PATTERN = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
+def _coerce_integer_threshold(value: Any) -> int:
+    """Coerce a KPI threshold to an int, rejecting non-integral values.
+
+    KPI thresholds (e.g. occupancyAlertBelow, adrAlertBelow) are integers.
+    ``int(70.5)`` would silently truncate to ``70`` and accept a fractional
+    input, so a fractional numeric value must be rejected rather than coerced
+    (review finding F-2). Accepts int, integral float (``70.0``), Decimal, and
+    integral numeric string (``"70"``); rejects fractional values (``70.5``,
+    ``"70.5"``), booleans, and non-numeric input.
+
+    Args:
+        value: The raw threshold value from the request body.
+
+    Returns:
+        The value as an int.
+
+    Raises:
+        ValueError: If the value is not an integral number.
+        TypeError: If the value is a type that cannot be a numeric threshold
+            (e.g. bool, None, list).
+    """
+    # bool is a subtype of int; reject it explicitly - True/False is not a
+    # meaningful threshold and int(True) == 1 would otherwise slip through.
+    if isinstance(value, bool):
+        raise TypeError("threshold must be a number, not a boolean")
+
+    if isinstance(value, int):
+        return value
+
+    if isinstance(value, float):
+        if not value.is_integer():
+            raise ValueError("threshold must be a whole number")
+        return int(value)
+
+    # Decimal and numeric strings: parse via float to detect fractional parts,
+    # then confirm integrality. This keeps the documented "accepts Decimal or
+    # numeric string" behavior while still rejecting fractional inputs.
+    numeric = float(value)  # raises TypeError/ValueError on non-numeric input
+    if not numeric.is_integer():
+        raise ValueError("threshold must be a whole number")
+    return int(numeric)
+
+
 def validate_settings(body: Dict[str, Any]) -> List[Dict[str, str]]:
     """Validate a settings update request body.
 
@@ -79,11 +122,12 @@ def validate_settings(body: Dict[str, Any]) -> List[Dict[str, str]]:
                 "message": "kpiThresholds must be an object",
             })
         else:
-            # occupancyAlertBelow: integer 0-100 (accepts int, float, Decimal, or numeric string)
+            # occupancyAlertBelow: integer 0-100 (accepts int, integral float,
+            # Decimal, or numeric string; fractional values are rejected).
             if "occupancyAlertBelow" in thresholds:
                 occ_val = thresholds["occupancyAlertBelow"]
                 try:
-                    occ_int = int(occ_val)
+                    occ_int = _coerce_integer_threshold(occ_val)
                     if occ_int < 0 or occ_int > 100:
                         errors.append({
                             "field": "kpiThresholds.occupancyAlertBelow",
@@ -95,11 +139,12 @@ def validate_settings(body: Dict[str, Any]) -> List[Dict[str, str]]:
                         "message": "occupancyAlertBelow must be an integer between 0 and 100",
                     })
 
-            # adrAlertBelow: integer 0-1000 (accepts int, float, Decimal, or numeric string)
+            # adrAlertBelow: integer 0-1000 (accepts int, integral float,
+            # Decimal, or numeric string; fractional values are rejected).
             if "adrAlertBelow" in thresholds:
                 adr_val = thresholds["adrAlertBelow"]
                 try:
-                    adr_int = int(adr_val)
+                    adr_int = _coerce_integer_threshold(adr_val)
                     if adr_int < 0 or adr_int > 1000:
                         errors.append({
                             "field": "kpiThresholds.adrAlertBelow",

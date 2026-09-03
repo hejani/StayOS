@@ -13,8 +13,8 @@ import boto3
 import moto
 import pytest
 
-from exceptions import BriefNotFoundException, ForbiddenError
-from handlers.briefs_handler import get_brief
+from exceptions import BriefNotFoundException, ForbiddenError, ValidationError
+from handlers.briefs_handler import get_brief, get_brief_by_date
 
 
 # ---------------------------------------------------------------------------
@@ -188,8 +188,12 @@ def test_get_brief_404_when_no_brief_exists() -> None:
         BillingMode="PAY_PER_REQUEST",
     )
 
-    event = _make_event(property_id="ALOHA-NONE-001", user_property_id="ALOHA-NONE-001")
-    params = {"propertyId": "ALOHA-NONE-001"}
+    # ALOHA-XYZ-999 is a validly-formatted (ALOHA-[A-Z]{3}-\d{3}) but
+    # deliberately-unseeded property, so the request passes the propertyId
+    # format check and reaches the 404 (no-brief) path under test. A code like
+    # "NONE" (4 letters) would be rejected as a 400 before ever getting there.
+    event = _make_event(property_id="ALOHA-XYZ-999", user_property_id="ALOHA-XYZ-999")
+    params = {"propertyId": "ALOHA-XYZ-999"}
 
     with patch("handlers.briefs_handler._dynamodb_resource", dynamodb), \
          patch("handlers.briefs_handler.BRIEFS_TABLE_NAME", "stayos-briefs-test"):
@@ -197,7 +201,7 @@ def test_get_brief_404_when_no_brief_exists() -> None:
             get_brief(event, params)
 
     assert exc_info.value.status_code == 404
-    assert "ALOHA-NONE-001" in exc_info.value.message
+    assert "ALOHA-XYZ-999" in exc_info.value.message
 
 
 @moto.mock_aws
@@ -265,3 +269,153 @@ def test_get_brief_returns_latest_when_multiple_exist(
 
     # Should return the latest brief (2026-08-03, not 2026-08-02)
     assert result["briefDate"] == "2026-08-03"
+
+
+
+@moto.mock_aws
+def test_get_brief_rejects_invalid_property_id_format() -> None:
+    """A malformed propertyId is rejected with a ValidationError before lookup."""
+    dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+
+    # "NONE" is 4 letters, so it fails the ALOHA-[A-Z]{3}-\d{3} format check.
+    event = _make_event(property_id="ALOHA-NONE-001", user_property_id="ALOHA-NONE-001")
+    params = {"propertyId": "ALOHA-NONE-001"}
+
+    with patch("handlers.briefs_handler._dynamodb_resource", dynamodb), \
+         patch("handlers.briefs_handler.BRIEFS_TABLE_NAME", "stayos-briefs-test"):
+        with pytest.raises(ValidationError) as exc_info:
+            get_brief(event, params)
+
+    assert exc_info.value.field == "propertyId"
+
+
+@moto.mock_aws
+def test_get_brief_forbidden_when_property_claim_missing() -> None:
+    """A token with no custom:propertyId claim is rejected as forbidden."""
+    dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+
+    # Well-formed propertyId, but the claims carry no custom:propertyId.
+    event = {
+        "httpMethod": "GET",
+        "path": "/v1/briefs/ALOHA-CHI-001",
+        "requestContext": {"authorizer": {"claims": {"custom:gmAlias": "jsmith"}}},
+    }
+    params = {"propertyId": "ALOHA-CHI-001"}
+
+    with patch("handlers.briefs_handler._dynamodb_resource", dynamodb), \
+         patch("handlers.briefs_handler.BRIEFS_TABLE_NAME", "stayos-briefs-test"):
+        with pytest.raises(ForbiddenError) as exc_info:
+            get_brief(event, params)
+
+    assert exc_info.value.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# get_brief_by_date (GET /v1/briefs/{propertyId}/{briefDate})
+# ---------------------------------------------------------------------------
+
+
+def _create_briefs_table(dynamodb: Any) -> Any:
+    """Create the moto-backed briefs table with the composite key schema."""
+    return dynamodb.create_table(
+        TableName="stayos-briefs-test",
+        KeySchema=[
+            {"AttributeName": "propertyId", "KeyType": "HASH"},
+            {"AttributeName": "briefDate", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "propertyId", "AttributeType": "S"},
+            {"AttributeName": "briefDate", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+
+@moto.mock_aws
+def test_get_brief_by_date_returns_matching_brief(mock_brief_item: Dict[str, Any]) -> None:
+    """A brief for the exact propertyId + briefDate composite key is returned."""
+    dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+    table = _create_briefs_table(dynamodb)
+    table.put_item(Item=mock_brief_item)
+
+    event = _make_event()
+    params = {"propertyId": "ALOHA-CHI-001", "briefDate": "2026-08-03"}
+
+    with patch("handlers.briefs_handler._dynamodb_resource", dynamodb), \
+         patch("handlers.briefs_handler.BRIEFS_TABLE_NAME", "stayos-briefs-test"):
+        result = get_brief_by_date(event, params)
+
+    assert result["propertyId"] == "ALOHA-CHI-001"
+    assert result["briefDate"] == "2026-08-03"
+
+
+@moto.mock_aws
+def test_get_brief_by_date_attaches_audio_url(mock_brief_item: Dict[str, Any]) -> None:
+    """A stored s3Key plus a configured CloudFront domain yields an audioUrl."""
+    dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+    table = _create_briefs_table(dynamodb)
+    table.put_item(Item=mock_brief_item)
+
+    event = _make_event()
+    params = {"propertyId": "ALOHA-CHI-001", "briefDate": "2026-08-03"}
+
+    with patch("handlers.briefs_handler._dynamodb_resource", dynamodb), \
+         patch("handlers.briefs_handler.BRIEFS_TABLE_NAME", "stayos-briefs-test"), \
+         patch("handlers.briefs_handler.AUDIO_CLOUDFRONT_DOMAIN", "d123.cloudfront.net"):
+        result = get_brief_by_date(event, params)
+
+    assert result["audioBrief"]["audioUrl"] == (
+        "https://d123.cloudfront.net/"
+        "briefs/2026/08/03/ALOHA-CHI-001/morning-brief.mp3"
+    )
+
+
+@moto.mock_aws
+def test_get_brief_by_date_404_when_absent() -> None:
+    """A valid property/date with no stored brief raises BriefNotFoundException."""
+    dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+    _create_briefs_table(dynamodb)
+
+    event = _make_event(property_id="ALOHA-XYZ-999", user_property_id="ALOHA-XYZ-999")
+    params = {"propertyId": "ALOHA-XYZ-999", "briefDate": "2026-08-03"}
+
+    with patch("handlers.briefs_handler._dynamodb_resource", dynamodb), \
+         patch("handlers.briefs_handler.BRIEFS_TABLE_NAME", "stayos-briefs-test"):
+        with pytest.raises(BriefNotFoundException) as exc_info:
+            get_brief_by_date(event, params)
+
+    assert exc_info.value.status_code == 404
+
+
+@moto.mock_aws
+def test_get_brief_by_date_rejects_invalid_date_format() -> None:
+    """A malformed briefDate is rejected with a ValidationError."""
+    dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+    _create_briefs_table(dynamodb)
+
+    event = _make_event()
+    params = {"propertyId": "ALOHA-CHI-001", "briefDate": "08-03-2026"}
+
+    with patch("handlers.briefs_handler._dynamodb_resource", dynamodb), \
+         patch("handlers.briefs_handler.BRIEFS_TABLE_NAME", "stayos-briefs-test"):
+        with pytest.raises(ValidationError) as exc_info:
+            get_brief_by_date(event, params)
+
+    assert exc_info.value.field == "briefDate"
+
+
+@moto.mock_aws
+def test_get_brief_by_date_forbidden_on_ownership_mismatch() -> None:
+    """Requesting another property's dated brief raises ForbiddenError."""
+    dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+    _create_briefs_table(dynamodb)
+
+    event = _make_event(property_id="ALOHA-NYC-001", user_property_id="ALOHA-CHI-001")
+    params = {"propertyId": "ALOHA-NYC-001", "briefDate": "2026-08-03"}
+
+    with patch("handlers.briefs_handler._dynamodb_resource", dynamodb), \
+         patch("handlers.briefs_handler.BRIEFS_TABLE_NAME", "stayos-briefs-test"):
+        with pytest.raises(ForbiddenError) as exc_info:
+            get_brief_by_date(event, params)
+
+    assert exc_info.value.status_code == 403

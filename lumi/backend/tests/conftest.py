@@ -1,8 +1,55 @@
 """Shared pytest fixtures for LUMI backend tests."""
 
-import os
+import importlib
+import sys
+from unittest.mock import Mock
 
 import pytest
+
+# The dataset_generator submodules that must resolve to their REAL
+# implementations for every test. Older test modules stubbed these with
+# ``MagicMock`` at import time; those stubs leaked across files via
+# ``sys.modules`` and caused order-dependent failures. This list drives an
+# autouse fixture that evicts any leaked mock and re-imports the real module
+# before each test runs.
+_DATASET_GENERATOR_MODULES = (
+    "dataset_generator",
+    "dataset_generator.config",
+    "dataset_generator.reference_date",
+    "dataset_generator.rooms_generator",
+    "dataset_generator.guests_generator",
+    "dataset_generator.revenue_generator",
+    "dataset_generator.reservations_generator",
+    "dataset_generator.work_orders_generator",
+    "dataset_generator.writer",
+)
+
+
+@pytest.fixture(autouse=True)
+def real_dataset_generator_modules() -> None:
+    """Ensure real dataset_generator modules are loaded before each test.
+
+    Some legacy test modules previously replaced dataset_generator submodules
+    with ``unittest.mock.Mock``/``MagicMock`` instances in ``sys.modules`` at
+    import time. Because ``sys.modules`` is process-global, those stubs leaked
+    into unrelated test files and produced order-dependent failures (a file
+    passing in isolation but failing when run alongside others).
+
+    This fixture runs before every test, evicts any mock instance found under
+    the known dataset_generator keys, and re-imports the genuine module so each
+    test observes the real implementation regardless of collection order.
+    """
+    for module_name in _DATASET_GENERATOR_MODULES:
+        cached = sys.modules.get(module_name)
+        if isinstance(cached, Mock):
+            # Drop the leaked mock so importlib re-resolves the real module.
+            del sys.modules[module_name]
+        try:
+            importlib.import_module(module_name)
+        except ImportError:
+            # Module may be genuinely unavailable in some environments; skip it
+            # rather than failing the whole suite.
+            continue
 
 
 @pytest.fixture(autouse=True)

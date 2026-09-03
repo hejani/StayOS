@@ -24,7 +24,7 @@ APP_PASSWORD ?=
         test-backend test-frontend \
         voice-build voice-deploy voice-destroy reseed \
         gateway-deploy gateway-destroy \
-        chat-build chat-deploy chat-destroy
+        chat-build chat-deploy chat-destroy generate-briefs
 
 # ─── Full Deploy (single command) ─────────────────────────────
 all: deploy
@@ -63,20 +63,30 @@ preflight:
 		exit 1; \
 	fi
 	@echo "[0/8] Verifying AWS CLI has bedrock-agentcore-control support..."
-	@aws bedrock-agentcore-control list-gateways --region $(REGION) > /dev/null 2>&1 \
-	|| (echo "" && \
-		echo "ERROR: AWS CLI does not support 'bedrock-agentcore-control'." && \
-		echo "" && \
-		echo "This subcommand requires AWS CLI version 2.27 or later." && \
-		echo "" && \
-		echo "To update your AWS CLI:" && \
-		echo "" && \
-		echo "  macOS:  brew upgrade awscli" && \
-		echo "  Linux:  curl 'https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip' -o 'awscliv2.zip' && unzip awscliv2.zip && sudo ./aws/install --update" && \
-		echo "" && \
-		echo "  Verify: aws --version" && \
-		echo "" && \
-		exit 1)
+	@ERR=$$(aws bedrock-agentcore-control list-gateways --region $(REGION) 2>&1 >/dev/null); \
+	if [ $$? -ne 0 ]; then \
+		if echo "$$ERR" | grep -qiE "Invalid choice|argument command|not.*subcommand|Unknown command|available commands"; then \
+			echo "" && \
+			echo "ERROR: AWS CLI does not support 'bedrock-agentcore-control'." && \
+			echo "" && \
+			echo "This subcommand requires AWS CLI version 2.27 or later." && \
+			echo "" && \
+			echo "To update your AWS CLI:" && \
+			echo "" && \
+			echo "  macOS:  brew upgrade awscli" && \
+			echo "  Linux:  curl 'https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip' -o 'awscliv2.zip' && unzip awscliv2.zip && sudo ./aws/install --update" && \
+			echo "" && \
+			echo "  Verify: aws --version" && \
+			echo "" && \
+			exit 1; \
+		else \
+			echo "" && \
+			echo "ERROR: 'bedrock-agentcore-control list-gateways' failed (not a CLI-version issue):" && \
+			echo "$$ERR" && \
+			echo "" && \
+			exit 1; \
+		fi; \
+	fi
 	@echo "    done"
 	@echo "[0/8] Verifying Bedrock model access ($(BEDROCK_MODEL_ID))..."
 	@aws bedrock-runtime converse \
@@ -144,6 +154,7 @@ ensure-buckets:
 
 # ─── Step 2: Package backend ──────────────────────────────────
 build-layer:
+	@mkdir -p build
 	@cd backend/layers/dependencies && \
 		pip3 install -r requirements.txt -t python/lib/python3.12/site-packages/ --quiet --disable-pip-version-check 2>/dev/null && \
 		zip -r ../../../build/stayos-dependencies-layer.zip python/ -x "*.pyc" > /dev/null
@@ -263,7 +274,9 @@ write-frontend-env:
 # ─── Step 6: Build frontend ───────────────────────────────────
 build-frontend:
 	@echo "[6/8] Building frontend..."
-	@cd frontend && npm ci --legacy-peer-deps --silent 2>/dev/null && npm run build > /dev/null 2>&1
+	@cd frontend && npm ci --legacy-peer-deps --silent && \
+		( npm run build > build-frontend.log 2>&1 || \
+		  { echo "LUMI frontend build FAILED - last 40 lines:"; tail -n 40 build-frontend.log; exit 1; } )
 	@echo "    done"
 
 # ─── Step 7: Deploy frontend ──────────────────────────────────

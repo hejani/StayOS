@@ -25,7 +25,30 @@ logger = Logger(service="stayos-seed-data")
 
 # Demo password must be provided via environment variable at deploy time.
 # CloudFormation passes this from the AppPassword parameter (NoEcho: true).
-DEMO_PASSWORD = os.environ["DEMO_PASSWORD"]
+# Read lazily (not at module import) so importing this module - e.g. during
+# test collection - does not require DEMO_PASSWORD to be set (review finding
+# Env-1). The deployed Lambda still gets it from the CloudFormation-set env var
+# at the point it is actually needed.
+DEMO_PASSWORD_ENV = "DEMO_PASSWORD"
+
+
+def _get_demo_password() -> str:
+    """Return the demo GM password from the environment.
+
+    Returns:
+        The demo password used to create the pilot GM Cognito users.
+
+    Raises:
+        KeyError: If ``DEMO_PASSWORD`` is not set at the point of use (a deploy
+            misconfiguration), surfaced loudly here rather than at import time.
+    """
+    try:
+        return os.environ[DEMO_PASSWORD_ENV]
+    except KeyError as exc:
+        raise KeyError(
+            f"{DEMO_PASSWORD_ENV} environment variable is not set; "
+            "CloudFormation must pass the AppPassword parameter to this function"
+        ) from exc
 
 # Complete GM-to-property mapping for 5 pilot properties across 4 regions.
 # Each entry contains all fields needed for Cognito user creation and
@@ -145,7 +168,7 @@ def provision_cognito_users(
             _cognito_client.admin_set_user_password(
                 UserPoolId=user_pool_id,
                 Username=email,
-                Password=DEMO_PASSWORD,
+                Password=_get_demo_password(),
                 Permanent=True,
             )
 

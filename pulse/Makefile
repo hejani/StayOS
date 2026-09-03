@@ -147,7 +147,7 @@ COGNITO_REGION      ?= $(REGION)
         build-frontend write-frontend-env deploy-frontend validate ensure-bucket \
         package package-backend package-infra ensure-code-placeholder \
         update-lambda-code deploy _require-deploy-vars \
-        gateway-deploy triage-build triage-deploy clean kitchen-reseed
+        gateway-deploy triage-build triage-deploy clean kitchen-reseed seed-run
 
 .DEFAULT_GOAL := help
 
@@ -189,7 +189,13 @@ lint-frontend: ## Lint frontend with next lint / eslint
 # ─── Frontend build ───────────────────────────────────────────
 build-frontend: ## Build the Next.js PWA (static export to out/)
 	@echo "Building frontend..."
-	@cd $(FRONTEND_DIR) && npm run build
+	@# Install deps first (B1): on a clean machine node_modules does not exist, so
+	@# `next build` would fail. Mirror LUMI/shell (npm ci --legacy-peer-deps) but
+	@# keep build output visible for diagnosability (no 2>/dev/null): redirect to a
+	@# log and tail it only if the build fails.
+	@cd $(FRONTEND_DIR) && npm ci --legacy-peer-deps --silent && \
+		( npm run build > build-frontend.log 2>&1 || \
+		  { echo "PULSE frontend build FAILED - last 40 lines:"; tail -n 40 build-frontend.log; exit 1; } )
 
 # Generate frontend/.env.production from stack outputs + shared Cognito, mirroring
 # LUMI's write-frontend-env. API URL defaults to the PULSE stack's ApiEndpoint.
@@ -300,7 +306,8 @@ update-lambda-code: ## Refresh all PULSE Lambda code from the shared zip
 	           pulse-alert-timeout-sweeper \
 	           pulse-escalation-service \
 	           pulse-action-executor pulse-history-writer pulse-info-batcher \
-	           pulse-push-service pulse-ops-read pulse-demo-simulator pulse-kitchen-seed; do \
+	           pulse-push-service pulse-ops-read pulse-demo-simulator \
+	           pulse-kitchen-seed pulse-rules-seed; do \
 		$(AWS) lambda update-function-code \
 			--function-name "$$FN" \
 			--s3-bucket $(DEPLOY_BUCKET) \
@@ -339,10 +346,51 @@ ensure-code-placeholder: ensure-bucket
 		echo "Lambda-code object present: s3://$(DEPLOY_BUCKET)/$(LAMBDA_CODE_S3_KEY)"; \
 	else \
 		echo "Uploading placeholder Lambda-code object (first deploy)..."; \
-		mkdir -p $(BUILD_DIR)/placeholder && \
+		mkdir -p $(BUILD_DIR)/placeholder/pulse/seed && \
+		: > $(BUILD_DIR)/placeholder/pulse/__init__.py && \
+		: > $(BUILD_DIR)/placeholder/pulse/seed/__init__.py && \
+		printf '%s\n' \
+			'"""First-deploy placeholder for the shared PULSE Lambda package."""' \
+			'import json, urllib.request' \
+			'' \
+			'' \
+			'def _cfn_ok(event, context):' \
+			'    """Respond SUCCESS to a CloudFormation custom resource (no-op).' \
+			'' \
+			'    The real code is built on CodeBuild AFTER the stack exists, then a' \
+			'    second deploy with bumped seed Triggers runs the real seeds. This' \
+			'    placeholder must NOT raise at import or invoke, or the seed custom' \
+			'    resources would hang the first stack create (BUG: No module pulse).' \
+			'    """' \
+			'    if "ResponseURL" not in event:' \
+			'        return' \
+			'    body = json.dumps({' \
+			'        "Status": "SUCCESS",' \
+			'        "PhysicalResourceId": event.get("PhysicalResourceId")' \
+			'            or (context.log_stream_name if context else "placeholder"),' \
+			'        "StackId": event.get("StackId"),' \
+			'        "RequestId": event.get("RequestId"),' \
+			'        "LogicalResourceId": event.get("LogicalResourceId"),' \
+			'        "Data": {"placeholder": True},' \
+			'    }).encode("utf-8")' \
+			'    req = urllib.request.Request(' \
+			'        url=event["ResponseURL"], data=body, method="PUT",' \
+			'        headers={"content-type": "", "content-length": str(len(body))})' \
+			'    urllib.request.urlopen(req)  # noqa: S310 (fixed CFN URL)' \
+			'' \
+			'' \
+			'def lambda_handler(event, context):' \
+			'    """Placeholder handler: succeed as a CFN no-op; error on direct invoke."""' \
+			'    if isinstance(event, dict) and "RequestType" in event:' \
+			'        _cfn_ok(event, context)' \
+			'        return' \
+			'    raise RuntimeError("placeholder - run package-backend to build real code")' \
+			> $(BUILD_DIR)/placeholder/pulse/seed/kitchen_seed.py && \
+		cp $(BUILD_DIR)/placeholder/pulse/seed/kitchen_seed.py \
+			$(BUILD_DIR)/placeholder/pulse/seed/rules_seed.py && \
 		printf 'def lambda_handler(event, context):\n    raise RuntimeError("placeholder - run package-backend")\n' \
 			> $(BUILD_DIR)/placeholder/lambda_function.py && \
-		(cd $(BUILD_DIR)/placeholder && zip -q ../placeholder.zip lambda_function.py) && \
+		(cd $(BUILD_DIR)/placeholder && zip -q -r ../placeholder.zip lambda_function.py pulse) && \
 		$(AWS) s3 cp $(BUILD_DIR)/placeholder.zip s3://$(DEPLOY_BUCKET)/$(LAMBDA_CODE_S3_KEY) --quiet; \
 	fi
 
@@ -424,6 +472,15 @@ deploy: _require-deploy-vars package ## Deploy PULSE (root -> data -> pipeline -
 	@echo "Building the shared Lambda zip on CodeBuild and refreshing function code..."
 	@$(MAKE) package-backend STACK_PREFIX=$(STACK_PREFIX) REGION=$(REGION) PROFILE=$(PROFILE)
 	@$(MAKE) update-lambda-code STACK_PREFIX=$(STACK_PREFIX) REGION=$(REGION) PROFILE=$(PROFILE)
+	@echo ""
+	@echo "Running PULSE data seeds against the freshly-deployed real code..."
+	@# On first deploy the seed custom resources ran against the placeholder
+	@# (a CFN no-op), so the tables are not yet seeded. Now that update-lambda-code
+	@# has pushed the REAL pulse package, invoke the seed Lambdas directly (they
+	@# support a no-ResponseURL direct invoke and are idempotent) so kitchen +
+	@# rules data actually lands. This avoids a second cloudformation deploy and
+	@# needs no template change.
+	@$(MAKE) seed-run STACK_PREFIX=$(STACK_PREFIX) REGION=$(REGION) PROFILE=$(PROFILE)
 	@echo ""
 	@echo "PULSE deploy complete: $(STACK_NAME)"
 	@echo "  API:      $$($(AWS) cloudformation describe-stacks --stack-name $(STACK_NAME) \
@@ -589,6 +646,24 @@ kitchen-reseed: ## Re-invoke the kitchen seed Lambda directly (manual refresh)
 		--payload '{"RequestType":"Create","ResourceProperties":{}}' \
 		/tmp/pulse-kitchen-reseed.json > /dev/null
 	@echo "Kitchen seed invoked; response: $$(cat /tmp/pulse-kitchen-reseed.json)"
+
+# Run BOTH data seeds via direct Lambda invoke (no ResponseURL -> idempotent put,
+# no CFN response). Used by `deploy` right after update-lambda-code so the real
+# seed code runs against the real package (the first stack-create seeds ran as a
+# no-op against the placeholder). Idempotent and safe to re-run.
+seed-run: ## Invoke kitchen + rules seed Lambdas directly against real code
+	@for SEED in kitchen-seed rules-seed; do \
+		FN="$(STACK_PREFIX)-$$SEED"; \
+		echo "  [seed] Invoking $$FN (direct, no ResponseURL)..."; \
+		$(AWS) lambda invoke \
+			--function-name "$$FN" \
+			--cli-binary-format raw-in-base64-out \
+			--payload '{"RequestType":"Create","ResourceProperties":{}}' \
+			/tmp/pulse-$$SEED-run.json > /dev/null \
+			&& echo "  [seed] $$FN response: $$(cat /tmp/pulse-$$SEED-run.json)" \
+			|| { echo "  [seed] ERROR: $$FN invoke failed"; exit 1; }; \
+	done
+	@echo "PULSE data seeds complete."
 
 # ─── Cleanup ──────────────────────────────────────────────────
 clean: ## Remove build artifacts (build/, frontend out/.next, __pycache__)

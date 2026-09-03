@@ -23,7 +23,7 @@ import logging
 import time
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from dataset_generator.config import (
     ADR_OFFSETS,
@@ -33,6 +33,7 @@ from dataset_generator.config import (
     SEGMENT_MIX,
     TTL_REVENUES_DAYS,
 )
+from dataset_generator.reference_date import resolve_reference_date
 from dataset_generator.writer import BatchWriter
 
 logger = logging.getLogger(__name__)
@@ -314,13 +315,17 @@ def _compute_ttl(record_date: date) -> int:
     return epoch
 
 
-def generate_revenue(writer: BatchWriter) -> Dict[Tuple[str, str], Dict[str, Any]]:
+def generate_revenue(
+    writer: BatchWriter,
+    reference_date: Optional[Union[str, date]] = None,
+    idempotent: bool = False,
+) -> Dict[Tuple[str, str], Dict[str, Any]]:
     """Generate 30 days of daily revenue/KPI records for all 5 pilot properties.
 
     Iterates over PROPERTY_PROFILES and for each property generates one revenue
-    item per day for SEED_DAYS (30) consecutive days ending today. Revenue
-    items include occupancy, ADR, RevPAR, total revenue, comparison deltas,
-    segment mix, and upsell metrics.
+    item per day for SEED_DAYS (30) consecutive days ending on the reference
+    date. Revenue items include occupancy, ADR, RevPAR, total revenue,
+    comparison deltas, segment mix, and upsell metrics.
 
     The returned lookup dict maps (propertyId, date_str) tuples to revenue
     items, enabling the reservations generator to match occupancy targets
@@ -329,13 +334,19 @@ def generate_revenue(writer: BatchWriter) -> Dict[Tuple[str, str], Dict[str, Any
     Args:
         writer: BatchWriter instance configured for the stayos-revenues table.
             Used to write generated items to DynamoDB in batches of 25.
+        reference_date: The "today" the 30-day window is anchored to, as an ISO
+            YYYY-MM-DD string or a date. Defaults to UTC today when omitted so
+            the whole window derives from this single value (Requirement 2.1).
+        idempotent: When True, write via Idempotent_Upsert (put-if-changed,
+            never delete) so a roll-forward re-run is a no-op (Requirements
+            2.3, 2.4). When False (default), perform a plain full write.
 
     Returns:
         Dict keyed by (propertyId, date_str) tuples, where each value is
         the full revenue item dict for that property-day combination.
         Structure: Dict[Tuple[str, str], Dict[str, Any]]
     """
-    today = date.today()
+    today = resolve_reference_date(reference_date)
     # Generate from (today - 29 days) through tomorrow (32 days total).
     # The extra 2 days (today + tomorrow) ensure the orchestrator always finds
     # revenue data for today regardless of when the seeder last ran.
@@ -429,11 +440,12 @@ def generate_revenue(writer: BatchWriter) -> Dict[Tuple[str, str], Dict[str, Any
         )
 
     # Write all revenue items to DynamoDB
-    result = writer.write_items(all_items)
+    result = writer.write_items(all_items, idempotent=idempotent)
     logger.info(
-        "Revenue data written: %d succeeded, %d failed (%d expected)",
+        "Revenue data written: %d succeeded, %d failed, %d skipped (%d expected)",
         result["success"],
         result["failed"],
+        result["skipped"],
         len(PROPERTY_PROFILES) * total_days,
     )
 

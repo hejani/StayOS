@@ -181,6 +181,74 @@ class TestKpiThresholdsValidation:
         assert len(errors) == 1
         assert "integer" in errors[0]["message"]
 
+    def test_integral_float_is_accepted(self) -> None:
+        """A whole-number float (70.0) is a valid integer threshold."""
+        body = {"kpiThresholds": {"occupancyAlertBelow": 70.0, "adrAlertBelow": 200.0}}
+        errors = validate_settings(body)
+        assert errors == []
+
+    def test_decimal_whole_value_is_accepted(self) -> None:
+        """A Decimal whole number is accepted (documented Decimal support)."""
+        from decimal import Decimal
+
+        body = {"kpiThresholds": {"occupancyAlertBelow": Decimal("70")}}
+        errors = validate_settings(body)
+        assert errors == []
+
+    def test_decimal_fractional_value_is_rejected(self) -> None:
+        """A fractional Decimal (70.5) is rejected as non-integral."""
+        from decimal import Decimal
+
+        body = {"kpiThresholds": {"occupancyAlertBelow": Decimal("70.5")}}
+        errors = validate_settings(body)
+        assert len(errors) == 1
+        assert "occupancyAlertBelow" in errors[0]["field"]
+
+    def test_integral_numeric_string_is_accepted(self) -> None:
+        """An integral numeric string ("70") is accepted."""
+        body = {"kpiThresholds": {"occupancyAlertBelow": "70", "adrAlertBelow": "200"}}
+        errors = validate_settings(body)
+        assert errors == []
+
+    def test_fractional_numeric_string_is_rejected(self) -> None:
+        """A fractional numeric string ("70.5") is rejected as non-integral."""
+        body = {"kpiThresholds": {"adrAlertBelow": "70.5"}}
+        errors = validate_settings(body)
+        assert len(errors) == 1
+        assert "adrAlertBelow" in errors[0]["field"]
+
+    def test_non_numeric_string_is_rejected(self) -> None:
+        """A non-numeric string is rejected as not an integer threshold."""
+        body = {"kpiThresholds": {"occupancyAlertBelow": "not-a-number"}}
+        errors = validate_settings(body)
+        assert len(errors) == 1
+        assert "occupancyAlertBelow" in errors[0]["field"]
+
+    def test_boolean_value_is_rejected(self) -> None:
+        """A boolean is rejected even though bool is an int subtype.
+
+        int(True) == 1 would otherwise slip through as a valid threshold; the
+        validator rejects bools explicitly (review finding F-2 hardening).
+        """
+        body = {"kpiThresholds": {"occupancyAlertBelow": True}}
+        errors = validate_settings(body)
+        assert len(errors) == 1
+        assert "occupancyAlertBelow" in errors[0]["field"]
+
+    def test_none_value_is_rejected(self) -> None:
+        """A None threshold is rejected rather than raising out of the validator."""
+        body = {"kpiThresholds": {"adrAlertBelow": None}}
+        errors = validate_settings(body)
+        assert len(errors) == 1
+        assert "adrAlertBelow" in errors[0]["field"]
+
+    def test_adr_fractional_float_is_rejected(self) -> None:
+        """A fractional ADR float (199.99) is rejected as non-integral."""
+        body = {"kpiThresholds": {"adrAlertBelow": 199.99}}
+        errors = validate_settings(body)
+        assert len(errors) == 1
+        assert "adrAlertBelow" in errors[0]["field"]
+
     def test_invalid_not_a_dict(self) -> None:
         """Non-dict value should produce an error."""
         body = {"kpiThresholds": "invalid"}

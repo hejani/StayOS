@@ -10,6 +10,27 @@ Thumbs.db
 *.swp
 *.swo
 
+# Python bytecode / caches — can appear anywhere (notably shared/, which has
+# no feature-level .gitignore of its own). Some .pyc files were committed
+# earlier; ignoring them here stops new ones and they can be untracked with
+# `git rm -r --cached **/__pycache__`.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Test / coverage artifacts (pytest, coverage.py) at any depth.
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.hypothesis/
+
+# Build logs emitted by the per-feature Makefiles (build-frontend, etc.).
+*build-frontend.log
+build.log
+
 # Session-only bug tracker (local deployment notes, not repo source).
 bugs.md
 
@@ -20,3 +41,10 @@ uat.md
 # pulse, and any future feature). Local IDE/agent state and specs, not app
 # source. Unanchored so it matches .kiro/ at any depth.
 .kiro/
+
+
+# Agent guide files (AGENTS.md) at any depth — local agent instructions,
+# not app source. Unanchored so it matches the repo root and every feature
+# directory (lumi/, pulse/, shared/, stayos-shell/, and any future one).
+# NOTE: files already committed stay tracked until explicitly `git rm --cached`.
+AGENTS.md

@@ -6,22 +6,11 @@ corporate account derivation, email/phone generation, and the full
 generate_guests function.
 """
 
-import sys
 from datetime import date, timedelta
 from typing import Any, Dict, List
 from unittest.mock import MagicMock
 
 import pytest
-
-# Stub out generator modules that don't exist yet so dataset_generator.__init__
-# can be imported without errors during incremental development.
-for _mod_name in (
-    "dataset_generator.revenue_generator",
-    "dataset_generator.reservations_generator",
-    "dataset_generator.work_orders_generator",
-):
-    if _mod_name not in sys.modules:
-        sys.modules[_mod_name] = MagicMock()
 
 from dataset_generator.config import (
     CORPORATE_ACCOUNTS,
@@ -406,7 +395,11 @@ class TestGenerateGuests:
     def setup_method(self) -> None:
         """Create a mock writer for each test."""
         self.mock_writer = MagicMock()
-        self.mock_writer.write_items.return_value = {"success": 25, "failed": 0}
+        self.mock_writer.write_items.return_value = {
+            "success": 25,
+            "failed": 0,
+            "skipped": 0,
+        }
 
     def test_returns_all_properties(self) -> None:
         """Lookup dict contains all 5 properties."""

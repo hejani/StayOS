@@ -222,6 +222,7 @@ class NovaSonicSession:
             "Nova Sonic stream opened successfully",
             connection_id=self.context.connection_id,
         )
+        # nosemgrep: is-function-without-parentheses -- bool field assignment, not a method.
         self.context.is_stream_active = True
 
         # 1. Send sessionStart event - inference params + turn detection
@@ -324,6 +325,9 @@ class NovaSonicSession:
         Args:
             audio_base64: Base64-encoded 16kHz/16-bit/mono PCM audio chunk.
         """
+        # nosemgrep: is-function-without-parentheses -- is_stream_active is a
+        # bool dataclass field (see SessionContext), not a method; this is a
+        # truthiness check, not a missing call.
         if not self.context.is_stream_active:
             logger.warning(
                 "Attempted to send audio on inactive stream",
@@ -370,6 +374,7 @@ class NovaSonicSession:
 
         try:
             output = await self._stream_response.await_output()
+            # nosemgrep: is-function-without-parentheses -- bool field, not a method.
             while self.context.is_stream_active:
                 try:
                     result = await output[1].receive()
@@ -411,6 +416,7 @@ class NovaSonicSession:
                 "message": "The voice session was interrupted. Please try again.",
             })
         finally:
+            # nosemgrep: is-function-without-parentheses -- bool field assignment, not a method.
             self.context.is_stream_active = False
 
     async def execute_tool(
@@ -516,6 +522,7 @@ class NovaSonicSession:
         )
 
         try:
+            # nosemgrep: is-function-without-parentheses -- bool field, not a method.
             if self.context.is_stream_active and self._stream_response:
                 # Close the audio content block if still open
                 if self._audio_content_started:
@@ -539,6 +546,7 @@ class NovaSonicSession:
                 error=str(error),
             )
         finally:
+            # nosemgrep: is-function-without-parentheses -- bool field assignment, not a method.
             self.context.is_stream_active = False
             self._audio_content_started = False
 

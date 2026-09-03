@@ -1,0 +1,1022 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  StayOS Unified Data Orchestrator (shared, cross-feature). Defines the
+  stayos-data-orchestrator Step Functions state machine that coordinates the
+  full demo-data lifecycle - Quiesce -> Generate -> Reconcile -> UnQuiesce ->
+  RegenerateBrief -> PrimeBaseline - plus the six thin step Lambdas it invokes,
+  their least-privilege IAM roles, and a custom resource that runs a full seed
+  on first deploy. StackPrefix is stayos-data. This is the Task 2 scaffold: the
+  step Lambdas return structured stub results (later tasks wire the real
+  generation, quiesce, brief-regen, and baseline-priming logic). Physical names
+  are kebab-case with the StackPrefix; logical IDs are PascalCase; IAM role
+  names carry the AWS::Region suffix; every resource is tagged Project +
+  resilience-tier.
+
+# -------------------------------------------------------------------
+# Parameters
+# -------------------------------------------------------------------
+Parameters:
+  StackPrefix:
+    Type: String
+    Default: stayos-data
+    Description: Prefix for all orchestrator resource names (StackPrefix = stayos-data)
+
+  # --- Lambda packaging (aws cloudformation package uploads here) ---
+  # The shared orchestrator deployment package (all six step handlers +
+  # orchestrator_common live inside it).
+  DeployBucket:
+    Type: String
+    Default: "stayos-data-deploy-artifacts"
+    Description: S3 bucket holding the orchestrator Lambda deployment package
+  LambdaCodeS3Key:
+    Type: String
+    Default: "functions/data-orchestrator.zip"
+    Description: S3 key of the orchestrator Lambda deployment package
+
+  # --- Pilot estate (comma-separated propertyIds used by seed fan-out) ---
+  # Sourced from the environment (PYQUALITY-06 / NAMING) - never hardcoded in
+  # handler code. Matches the five pilot demo properties.
+  EstatePropertyIds:
+    Type: CommaDelimitedList
+    Default: "ALOHA-CHI-001,ALOHA-MIA-001,ALOHA-TYO-001,ALOHA-MAD-001,ALOHA-BOM-001"
+    Description: Comma-separated pilot propertyIds the seed fan-out targets
+
+  # --- First-deploy seed trigger (bump-to-reseed via the custom resource) ---
+  SeedTrigger:
+    Type: String
+    Default: "1"
+    Description: >
+      Bump this value to force the first-deploy seed custom resource to re-run
+      on the next deploy. The seed path is idempotent upsert-only (Requirement
+      8.1); a bump safely re-runs a full seed fan-out over the estate.
+
+  # --- Application-data seed Lambda ARNs (full first-deploy seed) ---
+  # The orchestrator seed mode owns the FULL first-deploy seed (Requirement
+  # 1.3). The Generate step reuses these existing idempotent seed Lambdas for
+  # the application/PULSE data rather than duplicating their logic. ARNs are
+  # passed from the parent stack (PYQUALITY-06 / NAMING) - never hardcoded.
+  LumiSeedLambdaArn:
+    Type: String
+    Default: ""
+    Description: >
+      ARN of the existing LUMI seed-data Lambda (Cognito users, settings,
+      schedules, historical briefs, dataset). Invoked upsert-only by the
+      Generate step in seed mode. Empty disables application seeding.
+  PulseSeedLambdaArn:
+    Type: String
+    Default: ""
+    Description: >
+      ARN of the PULSE seed Lambda (rules / kitchen baseline). Invoked
+      upsert-only by the Generate step in seed mode. Empty disables PULSE
+      seeding.
+
+# -------------------------------------------------------------------
+# Metadata - group the six step Lambdas so the template reads as the
+# state machine sequence.
+# -------------------------------------------------------------------
+Metadata:
+  StepOrder:
+    Sequence:
+      - Quiesce
+      - Generate
+      - Reconcile
+      - UnQuiesce
+      - RegenerateBrief
+      - PrimeBaseline
+
+# -------------------------------------------------------------------
+# Mappings
+# -------------------------------------------------------------------
+# Per-property IANA timezone for the pilot estate (Requirement 3.1).
+# CloudFormation cannot iterate the EstatePropertyIds CommaDelimitedList to
+# emit one AWS::Scheduler::Schedule per element, so the pilot properties are
+# enumerated explicitly below (one schedule resource each) and this mapping
+# supplies each property's local timezone. The values are the authoritative
+# IANA zones from the GM seed data (lumi/backend/functions/seed-data/
+# seed_data.py :: GM_SEED_DATA) - NOT assumptions:
+#   ALOHA-CHI-001 -> America/Chicago  (Chicago, IL - Central)
+#   ALOHA-MIA-001 -> America/New_York (Miami, FL - Eastern)
+#   ALOHA-TYO-001 -> Asia/Tokyo       (Tokyo)
+#   ALOHA-MAD-001 -> Europe/Madrid    (Madrid)
+#   ALOHA-BOM-001 -> Asia/Kolkata     (Mumbai)
+# EventBridge Scheduler applies the timezone natively (incl. DST), so local
+# midnight is expressed as a fixed cron and the service resolves the offset.
+Mappings:
+  PropertyTimezones:
+    ALOHA-CHI-001:
+      Iana: America/Chicago
+    ALOHA-MIA-001:
+      Iana: America/New_York
+    ALOHA-TYO-001:
+      Iana: Asia/Tokyo
+    ALOHA-MAD-001:
+      Iana: Europe/Madrid
+    ALOHA-BOM-001:
+      Iana: Asia/Kolkata
+
+# -------------------------------------------------------------------
+# Conditions
+# -------------------------------------------------------------------
+# Only wire the application/PULSE seed invoke permission and env vars when the
+# corresponding seed Lambda ARN is provided (least privilege, Requirement 8.4).
+Conditions:
+  HasLumiSeedLambda: !Not [!Equals [!Ref LumiSeedLambdaArn, ""]]
+  HasPulseSeedLambda: !Not [!Equals [!Ref PulseSeedLambdaArn, ""]]
+
+# -------------------------------------------------------------------
+# Resources
+# -------------------------------------------------------------------
+Resources:
+
+  # =================================================================
+  # SHARED LOG GROUP + LAMBDA EXECUTION ROLE
+  # A single least-privilege execution role is shared by all six step
+  # Lambdas. The scaffold steps only need CloudWatch Logs; later tasks
+  # attach the specific DynamoDB / Lambda-invoke / ESM-toggle permissions
+  # each real step needs (Requirement 8.4, least privilege). No step holds
+  # a clear-tables permission (Requirement 8.1).
+  # =================================================================
+  StepLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      # Region-suffixed name per NAMING (IAM role names include ${AWS::Region}).
+      RoleName: !Sub "${StackPrefix}-step-role-${AWS::Region}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: Observability
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource:
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${StackPrefix}-*"
+        # Full first-deploy seed (Requirement 1.3): the Generate step in seed
+        # mode invokes the existing idempotent seed Lambdas. This grants ONLY
+        # lambda:InvokeFunction on those specific ARNs (least privilege,
+        # Requirement 8.4). It confers NO clear-tables / DeleteItem ability -
+        # the invoked seed Lambda enforces its own two-factor destructive-op
+        # guard and the orchestrator never sends the confirmation, so the
+        # scheduled roll-forward path remains upsert-only (Requirement 8.1).
+        - !If
+          - HasLumiSeedLambda
+          - PolicyName: InvokeLumiSeedLambda
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action: "lambda:InvokeFunction"
+                  Resource: !Ref LumiSeedLambdaArn
+          - !Ref "AWS::NoValue"
+        - !If
+          - HasPulseSeedLambda
+          - PolicyName: InvokePulseSeedLambda
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action: "lambda:InvokeFunction"
+                  Resource: !Ref PulseSeedLambdaArn
+          - !Ref "AWS::NoValue"
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  # -----------------------------------------------------------------
+  # Per-step log groups (explicit so retention is managed).
+  # -----------------------------------------------------------------
+  QuiesceLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${StackPrefix}-quiesce"
+      RetentionInDays: 30
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  GenerateLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${StackPrefix}-generate"
+      RetentionInDays: 30
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  ReconcileLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${StackPrefix}-reconcile"
+      RetentionInDays: 30
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  UnQuiesceLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${StackPrefix}-unquiesce"
+      RetentionInDays: 30
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  RegenerateBriefLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${StackPrefix}-regenerate-brief"
+      RetentionInDays: 30
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  PrimeBaselineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${StackPrefix}-prime-baseline"
+      RetentionInDays: 30
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  # =================================================================
+  # STEP LAMBDAS (six thin handlers; shared deployment package)
+  # Each parses {mode, propertyId, referenceDate} and delegates to a
+  # unit-testable function. ESTATE_PROPERTY_IDS is read from the
+  # environment (PYQUALITY-06); table names arrive in later tasks.
+  # =================================================================
+  QuiesceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${StackPrefix}-quiesce"
+      Description: Orchestrator Quiesce step (suppress PULSE rule engine)
+      Runtime: python3.12
+      Handler: quiesce_handler.lambda_handler
+      MemorySize: 256
+      Timeout: 60
+      Role: !GetAtt StepLambdaRole.Arn
+      LoggingConfig:
+        LogGroup: !Ref QuiesceLogGroup
+        LogFormat: JSON
+      Code:
+        S3Bucket: !Ref DeployBucket
+        S3Key: !Ref LambdaCodeS3Key
+      Environment:
+        Variables:
+          ESTATE_PROPERTY_IDS: !Join [",", !Ref EstatePropertyIds]
+          POWERTOOLS_SERVICE_NAME: !Ref StackPrefix
+          LOG_LEVEL: INFO
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  GenerateFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${StackPrefix}-generate"
+      Description: Orchestrator Generate step (window re-anchor + idempotent upsert)
+      Runtime: python3.12
+      Handler: generate_handler.lambda_handler
+      MemorySize: 512
+      Timeout: 300
+      Role: !GetAtt StepLambdaRole.Arn
+      LoggingConfig:
+        LogGroup: !Ref GenerateLogGroup
+        LogFormat: JSON
+      Code:
+        S3Bucket: !Ref DeployBucket
+        S3Key: !Ref LambdaCodeS3Key
+      Environment:
+        Variables:
+          ESTATE_PROPERTY_IDS: !Join [",", !Ref EstatePropertyIds]
+          POWERTOOLS_SERVICE_NAME: !Ref StackPrefix
+          LOG_LEVEL: INFO
+          # Full first-deploy seed (Requirement 1.3): the Generate step reuses
+          # these existing idempotent seed Lambdas in seed mode. Empty when the
+          # parent stack does not wire them; the code skips gracefully.
+          SEED_LAMBDA_ARN: !Ref LumiSeedLambdaArn
+          PULSE_SEED_LAMBDA_ARN: !Ref PulseSeedLambdaArn
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  ReconcileFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${StackPrefix}-reconcile"
+      Description: Orchestrator Reconcile step (room-status reconciliation)
+      Runtime: python3.12
+      Handler: reconcile_handler.lambda_handler
+      MemorySize: 512
+      Timeout: 300
+      Role: !GetAtt StepLambdaRole.Arn
+      LoggingConfig:
+        LogGroup: !Ref ReconcileLogGroup
+        LogFormat: JSON
+      Code:
+        S3Bucket: !Ref DeployBucket
+        S3Key: !Ref LambdaCodeS3Key
+      Environment:
+        Variables:
+          ESTATE_PROPERTY_IDS: !Join [",", !Ref EstatePropertyIds]
+          POWERTOOLS_SERVICE_NAME: !Ref StackPrefix
+          LOG_LEVEL: INFO
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  UnQuiesceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${StackPrefix}-unquiesce"
+      Description: Orchestrator UnQuiesce step (resume PULSE rule engine; Catch target)
+      Runtime: python3.12
+      Handler: unquiesce_handler.lambda_handler
+      MemorySize: 256
+      Timeout: 60
+      Role: !GetAtt StepLambdaRole.Arn
+      LoggingConfig:
+        LogGroup: !Ref UnQuiesceLogGroup
+        LogFormat: JSON
+      Code:
+        S3Bucket: !Ref DeployBucket
+        S3Key: !Ref LambdaCodeS3Key
+      Environment:
+        Variables:
+          ESTATE_PROPERTY_IDS: !Join [",", !Ref EstatePropertyIds]
+          POWERTOOLS_SERVICE_NAME: !Ref StackPrefix
+          LOG_LEVEL: INFO
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  RegenerateBriefFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${StackPrefix}-regenerate-brief"
+      Description: Orchestrator RegenerateBrief step (trigger LUMI generate-single)
+      Runtime: python3.12
+      Handler: regenerate_brief_handler.lambda_handler
+      MemorySize: 256
+      Timeout: 120
+      Role: !GetAtt StepLambdaRole.Arn
+      LoggingConfig:
+        LogGroup: !Ref RegenerateBriefLogGroup
+        LogFormat: JSON
+      Code:
+        S3Bucket: !Ref DeployBucket
+        S3Key: !Ref LambdaCodeS3Key
+      Environment:
+        Variables:
+          ESTATE_PROPERTY_IDS: !Join [",", !Ref EstatePropertyIds]
+          POWERTOOLS_SERVICE_NAME: !Ref StackPrefix
+          LOG_LEVEL: INFO
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  PrimeBaselineFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${StackPrefix}-prime-baseline"
+      Description: Orchestrator PrimeBaseline step (curated PULSE baseline)
+      Runtime: python3.12
+      Handler: prime_baseline_handler.lambda_handler
+      MemorySize: 256
+      Timeout: 120
+      Role: !GetAtt StepLambdaRole.Arn
+      LoggingConfig:
+        LogGroup: !Ref PrimeBaselineLogGroup
+        LogFormat: JSON
+      Code:
+        S3Bucket: !Ref DeployBucket
+        S3Key: !Ref LambdaCodeS3Key
+      Environment:
+        Variables:
+          ESTATE_PROPERTY_IDS: !Join [",", !Ref EstatePropertyIds]
+          POWERTOOLS_SERVICE_NAME: !Ref StackPrefix
+          LOG_LEVEL: INFO
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  # =================================================================
+  # STATE MACHINE EXECUTION ROLE
+  # Least privilege: the state machine may only invoke the six step
+  # Lambdas it owns. Region-suffixed name per NAMING.
+  # =================================================================
+  StateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${StackPrefix}-sfn-role-${AWS::Region}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: InvokeStepLambdas
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: "lambda:InvokeFunction"
+                Resource:
+                  - !GetAtt QuiesceFunction.Arn
+                  - !GetAtt GenerateFunction.Arn
+                  - !GetAtt ReconcileFunction.Arn
+                  - !GetAtt UnQuiesceFunction.Arn
+                  - !GetAtt RegenerateBriefFunction.Arn
+                  - !GetAtt PrimeBaselineFunction.Arn
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  # =================================================================
+  # STATE MACHINE: stayos-data-orchestrator
+  # Standard workflow. Sequence Quiesce -> Generate -> Reconcile ->
+  # UnQuiesce -> RegenerateBrief -> PrimeBaseline. Every step that runs
+  # after Quiesce has a Catch to CatchUnQuiesce so PULSE is never left
+  # suppressed on failure (Requirement 5.5); CatchUnQuiesce runs UnQuiesce
+  # and then transitions to a Fail state so the failure is not masked as
+  # success (Requirement 9.3).
+  # =================================================================
+  OrchestratorStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub "${StackPrefix}-orchestrator"
+      StateMachineType: STANDARD
+      RoleArn: !GetAtt StateMachineRole.Arn
+      # DefinitionSubstitutions replaces the ${...Arn} placeholders in the
+      # plain DefinitionString at deploy time (the idiomatic Step Functions
+      # pattern). The definition is a plain block string - NOT !Sub - so the
+      # ${QuiesceArn} tokens are literal placeholders resolved by these
+      # substitutions rather than by Fn::Sub. (Using !Sub here would make
+      # CloudFormation try to resolve the tokens as template refs and fail
+      # validate-template with "Unresolved resource dependencies".)
+      DefinitionSubstitutions:
+        QuiesceArn: !GetAtt QuiesceFunction.Arn
+        GenerateArn: !GetAtt GenerateFunction.Arn
+        ReconcileArn: !GetAtt ReconcileFunction.Arn
+        UnQuiesceArn: !GetAtt UnQuiesceFunction.Arn
+        RegenerateBriefArn: !GetAtt RegenerateBriefFunction.Arn
+        PrimeBaselineArn: !GetAtt PrimeBaselineFunction.Arn
+      DefinitionString: |
+        {
+          "Comment": "StayOS Unified Data Orchestrator - Quiesce -> Generate -> Reconcile -> UnQuiesce -> RegenerateBrief -> PrimeBaseline with a Catch that always Un-Quiesces before failing.",
+          "StartAt": "Quiesce",
+          "States": {
+            "Quiesce": {
+              "Type": "Task",
+              "Resource": "${QuiesceArn}",
+              "ResultPath": "$.quiesceResult",
+              "Next": "Generate"
+            },
+            "Generate": {
+              "Type": "Task",
+              "Resource": "${GenerateArn}",
+              "ResultPath": "$.generateResult",
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "ResultPath": "$.error",
+                  "Next": "CatchUnQuiesce"
+                }
+              ],
+              "Next": "Reconcile"
+            },
+            "Reconcile": {
+              "Type": "Task",
+              "Resource": "${ReconcileArn}",
+              "ResultPath": "$.reconcileResult",
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "ResultPath": "$.error",
+                  "Next": "CatchUnQuiesce"
+                }
+              ],
+              "Next": "UnQuiesce"
+            },
+            "UnQuiesce": {
+              "Type": "Task",
+              "Resource": "${UnQuiesceArn}",
+              "ResultPath": "$.unquiesceResult",
+              "Retry": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "Next": "RegenerateBrief"
+            },
+            "RegenerateBrief": {
+              "Type": "Task",
+              "Resource": "${RegenerateBriefArn}",
+              "ResultPath": "$.regenerateBriefResult",
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "ResultPath": "$.error",
+                  "Next": "PrimeBaseline"
+                }
+              ],
+              "Next": "PrimeBaseline"
+            },
+            "PrimeBaseline": {
+              "Type": "Task",
+              "Resource": "${PrimeBaselineArn}",
+              "ResultPath": "$.primeBaselineResult",
+              "End": true
+            },
+            "CatchUnQuiesce": {
+              "Type": "Task",
+              "Resource": "${UnQuiesceArn}",
+              "ResultPath": "$.unquiesceResult",
+              "Retry": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "Next": "ExecutionFailed"
+            },
+            "ExecutionFailed": {
+              "Type": "Fail",
+              "Error": "OrchestratorStepFailed",
+              "Cause": "A roll-forward step failed; PULSE was un-quiesced via the Catch path before failing."
+            }
+          }
+        }
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  # =================================================================
+  # FIRST-DEPLOY SEED - CloudFormation custom resource (Requirement 1.2)
+  # Runs a full seed fan-out (mode: "seed") via the state machine on stack
+  # create/update. A dedicated thin Lambda starts the execution so the
+  # custom-resource lifecycle (Create/Update/Delete) is decoupled from the
+  # (potentially long-running) state machine. Bump SeedTrigger to re-run.
+  # =================================================================
+  SeedStarterLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${StackPrefix}-seed-starter"
+      RetentionInDays: 30
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  # IAM role for the seed-starter Lambda: may start ONLY this state machine
+  # (least privilege, Requirement 8.4) plus CloudWatch Logs. Region-suffixed.
+  SeedStarterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${StackPrefix}-seed-starter-role-${AWS::Region}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: StartOrchestrator
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: "states:StartExecution"
+                Resource: !Ref OrchestratorStateMachine
+        - PolicyName: Observability
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource:
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${StackPrefix}-seed-starter:*"
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  SeedStarterFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${StackPrefix}-seed-starter"
+      Description: First-deploy seed starter (CloudFormation custom resource; starts the orchestrator in seed mode)
+      Runtime: python3.12
+      Handler: seed_starter_handler.lambda_handler
+      MemorySize: 256
+      Timeout: 60
+      Role: !GetAtt SeedStarterRole.Arn
+      LoggingConfig:
+        LogGroup: !Ref SeedStarterLogGroup
+        LogFormat: JSON
+      Code:
+        S3Bucket: !Ref DeployBucket
+        S3Key: !Ref LambdaCodeS3Key
+      Environment:
+        Variables:
+          # State machine ARN from the environment (PYQUALITY-06); never hardcoded.
+          STATE_MACHINE_ARN: !Ref OrchestratorStateMachine
+          POWERTOOLS_SERVICE_NAME: !Ref StackPrefix
+          LOG_LEVEL: INFO
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  SeedCustomResource:
+    Type: Custom::OrchestratorSeed
+    DependsOn: SeedStarterLogGroup
+    Properties:
+      ServiceToken: !GetAtt SeedStarterFunction.Arn
+      # Bumping SeedTrigger re-runs the full seed on the next deploy.
+      Trigger: !Ref SeedTrigger
+
+  # =================================================================
+  # ROLL-FORWARD STARTER (per-property concurrency guard; Requirement 1.6)
+  # The per-property EventBridge Scheduler rules invoke THIS Lambda instead of
+  # starting the state machine directly. The starter derives a DETERMINISTIC
+  # Step Functions execution name from {propertyId + referenceDate} and calls
+  # StartExecution through the concurrency guard. A second fire for the same
+  # property/day collides with ExecutionAlreadyExists and is logged + skipped
+  # rather than running an overlapping roll-forward (Requirement 1.6). Starting
+  # the state machine directly from the schedule would use an auto-generated
+  # (always-unique) name and could NOT dedupe overlapping runs - which is why
+  # the schedules target this Lambda.
+  # =================================================================
+  RollForwardStarterLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${StackPrefix}-rollforward-starter"
+      RetentionInDays: 30
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  # IAM role for the roll-forward starter Lambda: may start ONLY this state
+  # machine (least privilege, Requirement 8.4) plus CloudWatch Logs. It holds
+  # NO clear-tables / DeleteItem ability, so the scheduled path stays
+  # upsert-only (Requirement 8.1). Region-suffixed name per NAMING.
+  RollForwardStarterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${StackPrefix}-rollforward-starter-role-${AWS::Region}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: StartOrchestrator
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: "states:StartExecution"
+                Resource: !Ref OrchestratorStateMachine
+        - PolicyName: Observability
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource:
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${StackPrefix}-rollforward-starter:*"
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  RollForwardStarterFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${StackPrefix}-rollforward-starter"
+      Description: Per-property roll-forward starter (applies the concurrency guard via a deterministic execution name)
+      Runtime: python3.12
+      Handler: roll_forward_starter.lambda_handler
+      MemorySize: 256
+      Timeout: 60
+      Role: !GetAtt RollForwardStarterRole.Arn
+      LoggingConfig:
+        LogGroup: !Ref RollForwardStarterLogGroup
+        LogFormat: JSON
+      Code:
+        S3Bucket: !Ref DeployBucket
+        S3Key: !Ref LambdaCodeS3Key
+      Environment:
+        Variables:
+          # State machine ARN from the environment (PYQUALITY-06); never hardcoded.
+          STATE_MACHINE_ARN: !Ref OrchestratorStateMachine
+          POWERTOOLS_SERVICE_NAME: !Ref StackPrefix
+          LOG_LEVEL: INFO
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  # =================================================================
+  # PER-PROPERTY LOCAL-MIDNIGHT SCHEDULING (Requirement 3.1, 3.2, 3.5)
+  # One EventBridge Scheduler schedule per pilot property, each firing at
+  # that property's local midnight (ScheduleExpressionTimezone = the
+  # property's IANA zone) to start a roll-forward scoped to that property.
+  #
+  # SEPARATION FROM GM BRIEF SCHEDULES (Requirement 3.5): these roll-forward
+  # schedules are OWNED BY THIS SHARED STACK and are entirely distinct from
+  # the GM-customized brief delivery schedules. Those brief schedules are
+  # LUMI-owned, created at runtime by the SDK in schedule_manager.py, live in
+  # a different schedule group ("stayos-briefs"), use different names
+  # ("lumi-brief-<gmAlias>"), and target the LUMI orchestrator Lambda with a
+  # {action:"generate-single"} payload. The roll-forward schedules here use a
+  # separate group ("stayos-data-rollforward"), separate names
+  # ("stayos-data-rollforward-<propertyId>"), and target the state machine
+  # StartExecution with a {mode:"roll-forward"} payload. Because the name
+  # spaces and groups do not overlap, a stack create/update of these
+  # resources CANNOT read, modify, or overwrite any GM-customized brief
+  # delivery time.
+  # =================================================================
+
+  # Schedule group that isolates the roll-forward schedules from the
+  # LUMI-owned "stayos-briefs" group (Requirement 3.5 separation).
+  RollForwardScheduleGroup:
+    Type: AWS::Scheduler::ScheduleGroup
+    Properties:
+      Name: !Sub "${StackPrefix}-rollforward"
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  # Least-privilege role assumed by EventBridge Scheduler to invoke ONLY the
+  # roll-forward starter Lambda (Requirement 8.4). The starter (not the
+  # schedule) applies the per-property concurrency guard (Requirement 1.6).
+  # Region-suffixed name per NAMING.
+  SchedulerInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${StackPrefix}-scheduler-invoke-role-${AWS::Region}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: "sts:AssumeRole"
+            # Scope the trust to this account so only schedules in this
+            # account can assume the role.
+            Condition:
+              StringEquals:
+                "aws:SourceAccount": !Ref "AWS::AccountId"
+      Policies:
+        - PolicyName: InvokeRollForwardStarter
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: "lambda:InvokeFunction"
+                # ONLY the roll-forward starter Lambda; no other resource.
+                Resource: !GetAtt RollForwardStarterFunction.Arn
+      Tags:
+        - Key: Project
+          Value: StayOS
+        - Key: resilience-tier
+          Value: important
+        - Key: Component
+          Value: orchestrator
+
+  # -----------------------------------------------------------------
+  # Per-property roll-forward schedules (one explicit resource each).
+  # ScheduleExpression is a daily cron at 00:00 local; the timezone comes
+  # from the PropertyTimezones mapping so EventBridge Scheduler resolves the
+  # correct local-midnight instant (incl. DST). FlexibleTimeWindow OFF so the
+  # roll-forward fires exactly at local midnight, well before the GM brief
+  # cron later that local morning (Brief_Ordering_Guard, Requirement 3.3).
+  # Target is the roll-forward starter Lambda, which applies the per-property
+  # concurrency guard (deterministic execution name) before StartExecution
+  # (Requirement 1.6). The Input carries the roll-forward payload
+  # {propertyId}; the starter forces mode:"roll-forward" and resolves the
+  # reference date (defaulting to the property-local date via the resolver).
+  # -----------------------------------------------------------------
+  RollForwardScheduleChicago:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${StackPrefix}-rollforward-ALOHA-CHI-001"
+      GroupName: !Ref RollForwardScheduleGroup
+      Description: Daily local-midnight roll-forward for ALOHA-CHI-001
+      ScheduleExpression: "cron(0 0 * * ? *)"
+      ScheduleExpressionTimezone: !FindInMap [PropertyTimezones, ALOHA-CHI-001, Iana]
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      State: ENABLED
+      Target:
+        Arn: !GetAtt RollForwardStarterFunction.Arn
+        RoleArn: !GetAtt SchedulerInvokeRole.Arn
+        Input: '{"propertyId":"ALOHA-CHI-001"}'
+
+  RollForwardScheduleMiami:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${StackPrefix}-rollforward-ALOHA-MIA-001"
+      GroupName: !Ref RollForwardScheduleGroup
+      Description: Daily local-midnight roll-forward for ALOHA-MIA-001
+      ScheduleExpression: "cron(0 0 * * ? *)"
+      ScheduleExpressionTimezone: !FindInMap [PropertyTimezones, ALOHA-MIA-001, Iana]
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      State: ENABLED
+      Target:
+        Arn: !GetAtt RollForwardStarterFunction.Arn
+        RoleArn: !GetAtt SchedulerInvokeRole.Arn
+        Input: '{"propertyId":"ALOHA-MIA-001"}'
+
+  RollForwardScheduleTokyo:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${StackPrefix}-rollforward-ALOHA-TYO-001"
+      GroupName: !Ref RollForwardScheduleGroup
+      Description: Daily local-midnight roll-forward for ALOHA-TYO-001
+      ScheduleExpression: "cron(0 0 * * ? *)"
+      ScheduleExpressionTimezone: !FindInMap [PropertyTimezones, ALOHA-TYO-001, Iana]
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      State: ENABLED
+      Target:
+        Arn: !GetAtt RollForwardStarterFunction.Arn
+        RoleArn: !GetAtt SchedulerInvokeRole.Arn
+        Input: '{"propertyId":"ALOHA-TYO-001"}'
+
+  RollForwardScheduleMadrid:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${StackPrefix}-rollforward-ALOHA-MAD-001"
+      GroupName: !Ref RollForwardScheduleGroup
+      Description: Daily local-midnight roll-forward for ALOHA-MAD-001
+      ScheduleExpression: "cron(0 0 * * ? *)"
+      ScheduleExpressionTimezone: !FindInMap [PropertyTimezones, ALOHA-MAD-001, Iana]
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      State: ENABLED
+      Target:
+        Arn: !GetAtt RollForwardStarterFunction.Arn
+        RoleArn: !GetAtt SchedulerInvokeRole.Arn
+        Input: '{"propertyId":"ALOHA-MAD-001"}'
+
+  RollForwardScheduleMumbai:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${StackPrefix}-rollforward-ALOHA-BOM-001"
+      GroupName: !Ref RollForwardScheduleGroup
+      Description: Daily local-midnight roll-forward for ALOHA-BOM-001
+      ScheduleExpression: "cron(0 0 * * ? *)"
+      ScheduleExpressionTimezone: !FindInMap [PropertyTimezones, ALOHA-BOM-001, Iana]
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      State: ENABLED
+      Target:
+        Arn: !GetAtt RollForwardStarterFunction.Arn
+        RoleArn: !GetAtt SchedulerInvokeRole.Arn
+        Input: '{"propertyId":"ALOHA-BOM-001"}'
+
+# -------------------------------------------------------------------
+# Outputs
+# Exported for the parent stack and for demo control (manual StartExecution
+# uses the state machine ARN; Requirement 1.2).
+# -------------------------------------------------------------------
+Outputs:
+  StateMachineArn:
+    Description: ARN of the stayos-data-orchestrator state machine (manual StartExecution)
+    Value: !Ref OrchestratorStateMachine
+
+  StateMachineName:
+    Description: Name of the stayos-data-orchestrator state machine
+    Value: !GetAtt OrchestratorStateMachine.Name
+
+  SeedStarterFunctionArn:
+    Description: ARN of the first-deploy seed starter Lambda (custom-resource ServiceToken)
+    Value: !GetAtt SeedStarterFunction.Arn
+
+  RollForwardStarterFunctionArn:
+    Description: ARN of the per-property roll-forward starter Lambda (concurrency-guarded StartExecution; schedule target)
+    Value: !GetAtt RollForwardStarterFunction.Arn
+
+  StepLambdaRoleArn:
+    Description: ARN of the shared step-Lambda execution role (later tasks attach data permissions)
+    Value: !GetAtt StepLambdaRole.Arn
+
+  SchedulerInvokeRoleArn:
+    Description: ARN of the EventBridge Scheduler invoke role (StartExecution on the orchestrator only)
+    Value: !GetAtt SchedulerInvokeRole.Arn
+
+  RollForwardScheduleGroupName:
+    Description: Name of the per-property roll-forward schedule group (distinct from LUMI stayos-briefs)
+    Value: !Ref RollForwardScheduleGroup

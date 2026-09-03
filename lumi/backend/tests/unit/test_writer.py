@@ -14,23 +14,8 @@ import moto
 import pytest
 from botocore.exceptions import ClientError
 
-import sys
-from types import ModuleType
-from unittest.mock import MagicMock
-
-# Stub out generator modules that don't exist yet so dataset_generator.__init__
-# can be imported without errors during incremental development.
-for _mod_name in (
-    "dataset_generator.rooms_generator",
-    "dataset_generator.guests_generator",
-    "dataset_generator.revenue_generator",
-    "dataset_generator.reservations_generator",
-    "dataset_generator.work_orders_generator",
-):
-    if _mod_name not in sys.modules:
-        sys.modules[_mod_name] = MagicMock()
-
 from dataset_generator.writer import BatchWriter, convert_floats_to_decimal
+from dataset_generator.config import MAX_RETRIES
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +101,7 @@ class TestBatchWriter:
             items = [{"pk": f"item-{i}", "value": 1.5} for i in range(10)]
             result = writer.write_items(items)
 
-        assert result == {"success": 10, "failed": 0}
+        assert result == {"success": 10, "failed": 0, "skipped": 0, "readback_fallback": 0}
         assert writer.success_count == 10
         assert writer.failure_count == 0
 
@@ -137,7 +122,7 @@ class TestBatchWriter:
             items = [{"pk": f"item-{i}", "data": "test"} for i in range(60)]
             result = writer.write_items(items)
 
-        assert result == {"success": 60, "failed": 0}
+        assert result == {"success": 60, "failed": 0, "skipped": 0, "readback_fallback": 0}
 
     @moto.mock_aws
     def test_writes_exactly_25_items_in_one_batch(self) -> None:
@@ -155,7 +140,7 @@ class TestBatchWriter:
             items = [{"pk": f"item-{i}"} for i in range(25)]
             result = writer.write_items(items)
 
-        assert result == {"success": 25, "failed": 0}
+        assert result == {"success": 25, "failed": 0, "skipped": 0, "readback_fallback": 0}
 
     def test_handles_client_error(self) -> None:
         """ClientError from batch_write_item counts items as failed."""
@@ -179,7 +164,7 @@ class TestBatchWriter:
             items = [{"pk": f"item-{i}"} for i in range(5)]
             result = writer.write_items(items)
 
-        assert result == {"success": 0, "failed": 5}
+        assert result == {"success": 0, "failed": 5, "skipped": 0, "readback_fallback": 0}
         assert writer.failure_count == 5
 
     @patch("dataset_generator.writer.time.sleep")
@@ -312,6 +297,258 @@ class TestBatchWriter:
             writer = BatchWriter(table_name="test-table")
             result = writer.write_items([])
 
-        assert result == {"success": 0, "failed": 0}
+        assert result == {"success": 0, "failed": 0, "skipped": 0, "readback_fallback": 0}
         # No batch_write_item calls should be made
         mock_dynamodb.meta.client.batch_write_item.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Idempotent-upsert (put-if-changed) tests
+# ---------------------------------------------------------------------------
+
+
+class TestBatchWriterIdempotentUpsert:
+    """Tests for BatchWriter's idempotent-upsert (put-if-changed) write mode.
+
+    The roll-forward path (Requirements 2.3, 2.4) writes with idempotent=True:
+    only new or changed items are written, unchanged items are skipped, and
+    nothing is ever deleted. Re-running with the same reference date is a no-op.
+    """
+
+    @staticmethod
+    def _make_table() -> Any:
+        """Create a moto-backed table with a composite key for upsert tests."""
+        dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+        dynamodb.create_table(
+            TableName="upsert-table",
+            KeySchema=[
+                {"AttributeName": "propertyId", "KeyType": "HASH"},
+                {"AttributeName": "roomNumber", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "propertyId", "AttributeType": "S"},
+                {"AttributeName": "roomNumber", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        return dynamodb
+
+    @moto.mock_aws
+    def test_first_upsert_writes_all_items(self) -> None:
+        """On an empty table, every item is new so all are written."""
+        dynamodb = self._make_table()
+        items = [
+            {"propertyId": "P1", "roomNumber": f"{i}", "status": "AVAILABLE"}
+            for i in range(5)
+        ]
+
+        with patch("dataset_generator.writer._dynamodb", dynamodb):
+            writer = BatchWriter(table_name="upsert-table")
+            result = writer.write_items(items, idempotent=True)
+
+        assert result == {"success": 5, "failed": 0, "skipped": 0, "readback_fallback": 0}
+
+    @moto.mock_aws
+    def test_reupsert_same_items_is_noop(self) -> None:
+        """Re-upserting identical items skips them all (idempotent no-op)."""
+        dynamodb = self._make_table()
+        items = [
+            {"propertyId": "P1", "roomNumber": f"{i}", "status": "AVAILABLE"}
+            for i in range(5)
+        ]
+
+        with patch("dataset_generator.writer._dynamodb", dynamodb):
+            first = BatchWriter(table_name="upsert-table")
+            first.write_items(items, idempotent=True)
+
+            second = BatchWriter(table_name="upsert-table")
+            result = second.write_items(items, idempotent=True)
+
+        # Nothing changed, so everything is skipped and nothing is written.
+        assert result == {"success": 0, "failed": 0, "skipped": 5, "readback_fallback": 0}
+
+    @moto.mock_aws
+    def test_only_changed_items_are_written(self) -> None:
+        """Only items whose attributes changed are written; the rest skipped."""
+        dynamodb = self._make_table()
+        items = [
+            {"propertyId": "P1", "roomNumber": f"{i}", "status": "AVAILABLE"}
+            for i in range(5)
+        ]
+
+        with patch("dataset_generator.writer._dynamodb", dynamodb):
+            first = BatchWriter(table_name="upsert-table")
+            first.write_items(items, idempotent=True)
+
+            # Change a single item's status; leave the other 4 identical.
+            changed = [dict(item) for item in items]
+            changed[2]["status"] = "OCCUPIED"
+
+            second = BatchWriter(table_name="upsert-table")
+            result = second.write_items(changed, idempotent=True)
+
+        assert result == {"success": 1, "failed": 0, "skipped": 4, "readback_fallback": 0}
+
+    @moto.mock_aws
+    def test_idempotent_upsert_never_deletes(self) -> None:
+        """A smaller re-upsert never removes previously written items."""
+        dynamodb = self._make_table()
+        table = dynamodb.Table("upsert-table")
+        items = [
+            {"propertyId": "P1", "roomNumber": f"{i}", "status": "AVAILABLE"}
+            for i in range(5)
+        ]
+
+        with patch("dataset_generator.writer._dynamodb", dynamodb):
+            first = BatchWriter(table_name="upsert-table")
+            first.write_items(items, idempotent=True)
+
+            # Re-upsert only a subset - the others must remain in the table.
+            second = BatchWriter(table_name="upsert-table")
+            second.write_items(items[:2], idempotent=True)
+
+        remaining = table.scan()["Items"]
+        assert len(remaining) == 5
+
+
+
+    @patch("dataset_generator.writer.time.sleep")
+    def test_readback_failure_falls_back_to_write_and_counts(
+        self, mock_sleep: MagicMock
+    ) -> None:
+        """A persistent read-back ClientError writes the items and counts fallback.
+
+        Review finding CR-6: when the idempotent read-back (BatchGetItem) keeps
+        failing, the items must still be written (fail open) BUT the degradation
+        must be signalled distinctly via ``readback_fallback_count`` rather than
+        silently masquerading as genuine changes.
+        """
+        mock_dynamodb = MagicMock()
+        mock_client = MagicMock()
+        mock_dynamodb.meta.client = mock_client
+        # Table.key_schema drives _get_key_attributes.
+        mock_dynamodb.Table.return_value.key_schema = [
+            {"AttributeName": "pk", "KeyType": "HASH"},
+        ]
+        # Read-back always errors; the write path succeeds cleanly.
+        mock_client.batch_get_item.side_effect = ClientError(
+            error_response={
+                "Error": {"Code": "ProvisionedThroughputExceededException",
+                          "Message": "throttled"},
+            },
+            operation_name="BatchGetItem",
+        )
+        mock_client.batch_write_item.return_value = {"UnprocessedItems": {}}
+
+        items = [{"pk": f"item-{i}"} for i in range(5)]
+        with patch("dataset_generator.writer._dynamodb", mock_dynamodb):
+            writer = BatchWriter(table_name="throttled-table")
+            result = writer.write_items(items, idempotent=True)
+
+        # All 5 were written (fail open) and all 5 are counted as read-back
+        # fallbacks, NOT as skipped (which would falsely imply idempotency held).
+        assert result == {
+            "success": 5,
+            "failed": 0,
+            "skipped": 0,
+            "readback_fallback": 5,
+        }
+        assert writer.readback_fallback_count == 5
+        # The read-back was retried up to MAX_RETRIES before giving up.
+        assert mock_client.batch_get_item.call_count == MAX_RETRIES
+
+    @patch("dataset_generator.writer.time.sleep")
+    def test_readback_recovers_after_transient_error(
+        self, mock_sleep: MagicMock
+    ) -> None:
+        """A transient read-back error recovers on retry with no fallback count."""
+        mock_dynamodb = MagicMock()
+        mock_client = MagicMock()
+        mock_dynamodb.meta.client = mock_client
+        mock_dynamodb.Table.return_value.key_schema = [
+            {"AttributeName": "pk", "KeyType": "HASH"},
+        ]
+        transient = ClientError(
+            error_response={
+                "Error": {"Code": "ProvisionedThroughputExceededException",
+                          "Message": "throttled"},
+            },
+            operation_name="BatchGetItem",
+        )
+        # Fail twice, then return one stored item identical to item-0 so it is
+        # skipped; the remaining items are new and get written.
+        stored_item0 = {"pk": "item-0"}
+        mock_client.batch_get_item.side_effect = [
+            transient,
+            transient,
+            {"Responses": {"recover-table": [stored_item0]}, "UnprocessedKeys": {}},
+        ]
+        mock_client.batch_write_item.return_value = {"UnprocessedItems": {}}
+
+        items = [{"pk": f"item-{i}"} for i in range(3)]
+        with patch("dataset_generator.writer._dynamodb", mock_dynamodb):
+            writer = BatchWriter(table_name="recover-table")
+            result = writer.write_items(items, idempotent=True)
+
+        # No fallback: the read-back eventually succeeded. item-0 matched and was
+        # skipped; item-1 and item-2 were written.
+        assert writer.readback_fallback_count == 0
+        assert result["readback_fallback"] == 0
+        assert result["skipped"] == 1
+        assert result["success"] == 2
+        assert mock_client.batch_get_item.call_count == 3
+
+
+
+    @moto.mock_aws
+    def test_idempotent_write_of_empty_list_is_a_noop(self) -> None:
+        """Idempotent write of an empty list skips the read-back entirely."""
+        dynamodb = self._make_table()
+        with patch("dataset_generator.writer._dynamodb", dynamodb):
+            writer = BatchWriter(table_name="upsert-table")
+            result = writer.write_items([], idempotent=True)
+
+        assert result == {
+            "success": 0,
+            "failed": 0,
+            "skipped": 0,
+            "readback_fallback": 0,
+        }
+
+    @patch("dataset_generator.writer.time.sleep")
+    def test_readback_unprocessed_keys_exhaust_counts_fallback(
+        self, mock_sleep: MagicMock
+    ) -> None:
+        """Read-back keys that never clear (persistent UnprocessedKeys) fall back.
+
+        Distinct from a ClientError: here BatchGetItem returns 200 but keeps
+        reporting UnprocessedKeys. After MAX_RETRIES the still-unread keys are
+        treated as changed (written) and counted as read-back fallbacks so the
+        degradation is visible (review finding CR-6).
+        """
+        mock_dynamodb = MagicMock()
+        mock_client = MagicMock()
+        mock_dynamodb.meta.client = mock_client
+        mock_dynamodb.Table.return_value.key_schema = [
+            {"AttributeName": "pk", "KeyType": "HASH"},
+        ]
+        # Always echo the requested keys back as UnprocessedKeys, never clearing.
+        def _always_unprocessed(RequestItems):  # noqa: N803 - boto3 kwarg name
+            return {
+                "Responses": {},
+                "UnprocessedKeys": RequestItems,
+            }
+
+        mock_client.batch_get_item.side_effect = _always_unprocessed
+        mock_client.batch_write_item.return_value = {"UnprocessedItems": {}}
+
+        items = [{"pk": f"item-{i}"} for i in range(3)]
+        with patch("dataset_generator.writer._dynamodb", mock_dynamodb):
+            writer = BatchWriter(table_name="stuck-table")
+            result = writer.write_items(items, idempotent=True)
+
+        # All 3 keys never resolved -> counted as fallback and written.
+        assert writer.readback_fallback_count == 3
+        assert result["readback_fallback"] == 3
+        assert result["success"] == 3
+        assert result["skipped"] == 0

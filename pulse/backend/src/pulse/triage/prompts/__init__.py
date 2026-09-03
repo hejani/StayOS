@@ -17,6 +17,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
+
+# nosemgrep: python37-compatibility-importlib2 -- PULSE backend targets Python
+# 3.12 only (pyproject: requires-python >=3.12); importlib.resources is standard
+# and preferred here so templates ship inside the Lambda package. The
+# importlib_resources backport is unnecessary and would add a dependency.
 from importlib import resources
 from typing import Any
 
