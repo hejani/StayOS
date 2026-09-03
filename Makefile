@@ -42,12 +42,16 @@ help:
 	@echo "  make lumi-<target>    run <target> in lumi/ (deploy, destroy, test, lint, reseed, ...)"
 	@echo "  make pulse-<target>   run <target> in pulse/ (test, lint, validate, package, deploy, ...)"
 	@echo "  make shell-<target>   run <target> in stayos-shell/ (test, lint, build-frontend, deploy, ...)"
+	@echo "  make data-<target>    run <target> in shared/data-orchestrator/ (deploy, test, validate, destroy, ...)"
 	@echo "  make deploy-all       deploy LUMI, then deploy PULSE with LUMI's outputs threaded in"
 	@echo "                        requires APP_PASSWORD=...; honors PROFILE=... REGION=... (default us-east-1)"
-	@echo "  make test-all         run every feature's test suite (shell + LUMI + PULSE)"
+	@echo "  make test-all         run every feature's test suite (shell + LUMI + PULSE + data-orchestrator)"
 	@echo ""
 	@echo "  The StayOS shell (login + launcher at /) publishes to the shared distribution root."
 	@echo "  After LUMI's stack exists, run: make shell-deploy [PROFILE=... REGION=...]"
+	@echo ""
+	@echo "  The shared data orchestrator is deployed additively AFTER deploy-all:"
+	@echo "  run: make data-deploy [AWS_PROFILE=... REGION=...] (does not re-seed live data)."
 	@echo ""
 	@echo "See lumi/Makefile and lumi/README.md for the full LUMI target list."
 
@@ -66,6 +70,17 @@ pulse-%:
 # so shell-deploy should be run after LUMI's stack exists.
 shell-%:
 	$(MAKE) -C stayos-shell $*
+
+# `make data-<anything>` forwards to the shared Unified Data Orchestrator
+# Makefile under shared/data-orchestrator/ (e.g. data-deploy, data-test,
+# data-validate, data-destroy). The orchestrator is a shared, cross-feature
+# stack (StackPrefix stayos-data) that owns the per-property roll-forward layer
+# and PULSE baseline priming. It is deployed ADDITIVELY (see its Makefile
+# DESIGN NOTE): it does not take over initial seeding, so the legacy
+# stayos-seed-data path and the live dataset are left untouched. It depends on
+# LUMI/PULSE already being deployed, so run data-deploy after `make deploy-all`.
+data-%:
+	$(MAKE) -C shared/data-orchestrator $*
 
 # ─── deploy-all: deploy both features, wiring LUMI's outputs into PULSE ───────
 # PULSE cannot deploy standalone — it needs values produced by the LUMI deploy:
@@ -206,5 +221,5 @@ deploy-all:
 	@echo "  PULSE PWA: <lumi-cloudfront-domain>/pulse/"
 	@echo "════════════════════════════════════════════════════════════════"
 
-test-all: shell-test lumi-test pulse-test
+test-all: shell-test lumi-test pulse-test data-test
 
