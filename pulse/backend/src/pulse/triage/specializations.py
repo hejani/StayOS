@@ -379,7 +379,7 @@ def draft_group_notification(
         A drafted notification message.
     """
     block = context.group_block or {}
-    block_id = block.get("blockId", "the affected group block")
+    block_id = block.get("blockId") or "your group block"
     if not options:
         return (
             f"Regarding {block_id}: some rooms are temporarily out of order and no "

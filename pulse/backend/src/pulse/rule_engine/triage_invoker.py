@@ -50,7 +50,7 @@ from typing import Any, Optional
 from pulse.common.aws import get_client
 from pulse.common.config import get_optional_env
 from pulse.common.logging import get_logger
-from pulse.common.models import AlertDraft
+from pulse.common.models import AlertDraft, AlertType
 
 logger = get_logger("pulse-rule-evaluator")
 
@@ -73,7 +73,10 @@ def build_invoker_event(draft: AlertDraft) -> dict[str, str]:
 
     The invoker (and, downstream, the runtime entrypoint) expects
     ``{alertId, alertType, propertyId, tier}`` (camelCase). Enum values are
-    stringified via their ``.value``.
+    stringified via their ``.value``. For OOO_CLUSTER alerts a ``blockId`` is
+    also included (parsed from the dedupe key ``OOO_CLUSTER#<propertyId>#<blockId>``)
+    so the triage situation builder can reference the real group block instead
+    of a placeholder.
 
     Args:
         draft: The persisted, delivered alert draft to triage.
@@ -81,12 +84,19 @@ def build_invoker_event(draft: AlertDraft) -> dict[str, str]:
     Returns:
         The event dict for the ``pulse-triage-invoker`` Lambda.
     """
-    return {
+    event = {
         "alertId": draft.alert_id,
         "alertType": draft.type.value,
         "propertyId": draft.property_id,
         "tier": draft.tier.value,
     }
+    # OOO dedupe key is OOO_CLUSTER#<propertyId>#<blockId>; the block id is the
+    # trailing segment. Include it so the OOO triage names the real block.
+    if draft.type is AlertType.OOO_CLUSTER:
+        parts = draft.dedupe_key.split("#")
+        if len(parts) >= 3 and parts[-1]:
+            event["blockId"] = parts[-1]
+    return event
 
 
 def invoke_triage_async(

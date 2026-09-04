@@ -32,6 +32,7 @@ from pulse.common.models import AlertTier, AlertType
 from pulse.rule_engine.alert_factory import build_alert_draft
 from pulse.rule_engine.triage_invoker import (
     ENV_TRIAGE_INVOKER_FUNCTION_NAME,
+    build_invoker_event,
     invoke_triage_async,
 )
 
@@ -155,3 +156,41 @@ def test_invoker_name_resolved_from_environment(
 
     assert len(client.calls) == 1
     assert client.calls[0]["FunctionName"] == _INVOKER_NAME
+
+
+
+def test_ooo_event_includes_block_id_from_dedupe_key() -> None:
+    """OOO_CLUSTER events carry blockId parsed from the dedupe key.
+
+    Regression for the "the affected group block" placeholder leak: the OOO
+    triage situation builder needs the real block id, which travels in the
+    invoker event as the trailing dedupe-key segment
+    (OOO_CLUSTER#<propertyId>#<blockId>).
+    """
+    draft = build_alert_draft(
+        property_id="ALOHA-CHI-001",
+        tier=AlertTier.WARNING,
+        alert_type=AlertType.OOO_CLUSTER,
+        title="t",
+        detail="d",
+        dedupe_key="OOO_CLUSTER#ALOHA-CHI-001#BLOCK-778-mtn00agc",
+        source_entity_ref={"table": "lumi", "ruleType": "OOO_CLUSTER"},
+    )
+    event = build_invoker_event(draft)
+    assert event["blockId"] == "BLOCK-778-mtn00agc"
+    assert event["alertType"] == "OOO_CLUSTER"
+
+
+def test_non_ooo_event_has_no_block_id() -> None:
+    """Non-OOO events do not carry a blockId (it is OOO-specific)."""
+    draft = build_alert_draft(
+        property_id="ALOHA-CHI-001",
+        tier=AlertTier.CRITICAL,
+        alert_type=AlertType.WALK_RISK,
+        title="t",
+        detail="d",
+        dedupe_key="WALK_RISK#ALOHA-CHI-001#2026-09-04",
+        source_entity_ref={"table": "lumi", "ruleType": "WALK_RISK"},
+    )
+    event = build_invoker_event(draft)
+    assert "blockId" not in event

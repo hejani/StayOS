@@ -342,7 +342,7 @@ def build_vip_room_not_ready_context(
 
 
 def build_ooo_cluster_context(
-    property_id: str, tool_caller: ToolCaller
+    property_id: str, tool_caller: ToolCaller, block_id: Optional[str] = None
 ) -> SituationContext:
     """Gather OOO Cluster facts and assemble the context (UC-03).
 
@@ -359,6 +359,9 @@ def build_ooo_cluster_context(
     Args:
         property_id: The alert's property (server-side scope for every tool).
         tool_caller: The Gateway tool-call seam.
+        block_id: The affected group-block identifier from the alert (parsed
+            from the OOO alert's dedupe key). When absent, a neutral descriptor
+            is used so no prompt-template placeholder leaks into the brief.
 
     Returns:
         An OOO Cluster :class:`SituationContext`.
@@ -407,11 +410,15 @@ def build_ooo_cluster_context(
             "replacementCandidateCount": len(replacement_candidates),
         },
     )
+    # Use the real block id from the alert when available; otherwise a neutral
+    # descriptor (never the prompt-template placeholder "the affected group
+    # block", which previously leaked verbatim into GM-facing briefs).
+    group_block = {"blockId": block_id} if block_id else {"blockId": "unspecified"}
     return SituationContext(
         property_id=property_id,
         required_room_type=required_room_type,
         replacement_candidates=replacement_candidates,
-        group_block={"blockId": "the affected group block"},
+        group_block=group_block,
     )
 
 
@@ -450,7 +457,10 @@ _BUILDERS = {
 
 
 def build_situation_context(
-    alert_type: AlertType, property_id: str, tool_caller: ToolCaller
+    alert_type: AlertType,
+    property_id: str,
+    tool_caller: ToolCaller,
+    block_id: Optional[str] = None,
 ) -> SituationContext:
     """Assemble the SituationContext for an alert type via the Gateway tools.
 
@@ -458,6 +468,8 @@ def build_situation_context(
         alert_type: The triage-eligible alert type.
         property_id: The alert's property (server-side tool scope).
         tool_caller: The Gateway tool-call seam.
+        block_id: OOO Cluster only - the affected group-block id from the alert;
+            ignored by other alert types.
 
     Returns:
         The assembled :class:`SituationContext`.
@@ -471,6 +483,8 @@ def build_situation_context(
             f"Alert type {alert_type.value} is not triage-eligible",
             reason="unsupported_type",
         )
+    if alert_type is AlertType.OOO_CLUSTER:
+        return build_ooo_cluster_context(property_id, tool_caller, block_id=block_id)
     return builder(property_id, tool_caller)
 
 
