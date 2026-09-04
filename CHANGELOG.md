@@ -94,4 +94,4 @@ on AWS (`us-east-1`).
   Served at `/pulse`.
 
 [1.1.0]: https://github.com/hejani/StayOS/releases/tag/v1.1.0
-[1.0.0]: https://github.com/hejani/StayOS/releases/tag/v1.0
+[1.0.0]: https://github.com/hejani/StayOS/releases/tag/v1.0.0
