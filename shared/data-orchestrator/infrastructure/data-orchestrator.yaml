@@ -227,6 +227,7 @@ Resources:
                   - "dynamodb:UpdateItem"
                   - "dynamodb:GetItem"
                   - "dynamodb:Query"
+                  - "dynamodb:DescribeTable"
                 Resource:
                   - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ReservationsTableName}"
                   - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ReservationsTableName}/index/*"

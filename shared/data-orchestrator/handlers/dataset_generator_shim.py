@@ -50,9 +50,14 @@ def _candidate_paths() -> List[Path]:
         candidates.append(Path(env_path))
 
     # Repo-relative fallback: handlers dir -> repo root -> LUMI seed-data dir.
-    # handlers/ -> data-orchestrator/ -> shared/ -> <repo root>
-    repo_root = Path(__file__).resolve().parents[3]
-    candidates.append(repo_root / "lumi" / "backend" / "functions" / "seed-data")
+    # handlers/ -> data-orchestrator/ -> shared/ -> <repo root>. Guard the index:
+    # in a packaged Lambda this file is at the zip root (the dataset_generator
+    # package is vendored alongside it), so there are not enough parents - avoid
+    # an IndexError at import time that would crash the whole handler.
+    resolved = Path(__file__).resolve()
+    if len(resolved.parents) > 3:
+        repo_root = resolved.parents[3]
+        candidates.append(repo_root / "lumi" / "backend" / "functions" / "seed-data")
 
     return candidates
 
