@@ -69,18 +69,23 @@ LUMI_ORCHESTRATOR_FN    ?= $(LUMI_STACK_PREFIX)-orchestrator
 PULSE_STACK_PREFIX      ?= pulse
 PULSE_RULE_EVALUATOR_FN ?= $(PULSE_STACK_PREFIX)-rule-evaluator
 
+# Pilot estate (matches the template EstatePropertyIds default). Used by the
+# post-deploy `prime` step to generate today's brief for every property so a
+# fresh deploy is populated out of the box (no waiting for local midnight).
+ESTATE_PROPERTY_IDS ?= ALOHA-CHI-001 ALOHA-MIA-001 ALOHA-TYO-001 ALOHA-MAD-001 ALOHA-BOM-001
+
 # The six step-Lambda handlers + starters all live in handlers/ and are bundled
 # into one zip. AWS profile flag threaded into every aws call.
 AWS_PROFILE_FLAG := $(if $(AWS_PROFILE),--profile $(AWS_PROFILE),)
 AWS := aws $(AWS_PROFILE_FLAG) --region $(REGION)
 
 .PHONY: all deploy package ensure-bucket package-infra deploy-infra \
-        update-lambda-code validate test lint clean destroy
+        update-lambda-code prime validate test lint clean destroy
 
 # ─── Full Deploy (single command) ─────────────────────────────
 all: deploy
 
-deploy: ensure-bucket package deploy-infra update-lambda-code
+deploy: ensure-bucket package deploy-infra update-lambda-code prime
 	@echo ""
 	@echo "══════════════════════════════════════════════════════════════"
 	@echo "  Data Orchestrator deployment complete (additive / Option 1)"
@@ -96,8 +101,9 @@ deploy: ensure-bucket package deploy-infra update-lambda-code
 	@echo ""
 	@echo "  Seeding is DISABLED (LumiSeedLambdaArn/PulseSeedLambdaArn empty):"
 	@echo "  the legacy stayos-seed-data path remains the initial seeder and the"
-	@echo "  live dataset is untouched. Roll-forward schedules run per property"
-	@echo "  at local midnight in their own schedule group."
+	@echo "  live dataset is untouched. Today's brief for every property was"
+	@echo "  primed by the roll-forward above; thereafter the per-property"
+	@echo "  local-midnight schedules keep them fresh (own schedule group)."
 	@echo "══════════════════════════════════════════════════════════════"
 
 # ─── Step 1: Ensure the deploy bucket exists ──────────────────
@@ -200,6 +206,52 @@ update-lambda-code:
 	done
 	@sleep 3
 	@echo "    done"
+
+# ─── Post-deploy: prime today's data for every property ───────
+# A fresh deploy's seeded window is anchored to a reference date that may not be
+# the current calendar date, so a brief for "today" may not exist until the
+# per-property local-midnight schedule fires. This step runs an immediate
+# roll-forward for every pilot property so the app is populated out of the box
+# (LUMI briefs for today + re-anchored window). It is:
+#   - idempotent: roll-forward is upsert-only and the concurrency guard skips a
+#     duplicate same-property/day execution (ExecutionAlreadyExists);
+#   - failure-isolated: a property that fails to prime logs a warning but does
+#     not fail the deploy (the nightly schedule will still catch it up).
+# Waits briefly for each execution so a following step sees populated data.
+prime:
+	@echo "[5/5] Priming today's data for the estate (per-property roll-forward)..."
+	@SM=$$($(AWS) cloudformation describe-stacks --stack-name $(STACK_NAME) \
+		--query "Stacks[0].Outputs[?OutputKey=='StateMachineArn'].OutputValue" \
+		--output text 2>/dev/null); \
+	if [ -z "$$SM" ] || [ "$$SM" = "None" ]; then \
+		echo "    WARNING: state machine ARN not found; skipping prime"; \
+	else \
+		EXECS=""; \
+		for P in $(ESTATE_PROPERTY_IDS); do \
+			E=$$($(AWS) stepfunctions start-execution --state-machine-arn "$$SM" \
+				--name "prime-$$P-$$(date -u +%Y%m%dT%H%M%S)" \
+				--input "{\"mode\":\"roll-forward\",\"propertyId\":\"$$P\"}" \
+				--query "executionArn" --output text 2>/dev/null); \
+			if [ -n "$$E" ] && [ "$$E" != "None" ]; then \
+				echo "    started roll-forward for $$P"; EXECS="$$EXECS $$E"; \
+			else \
+				echo "    WARNING: could not start roll-forward for $$P (nightly schedule will catch up)"; \
+			fi; \
+		done; \
+		for E in $$EXECS; do \
+			for i in $$(seq 1 30); do \
+				S=$$($(AWS) stepfunctions describe-execution --execution-arn "$$E" \
+					--query "status" --output text 2>/dev/null); \
+				case "$$S" in \
+					SUCCEEDED) break;; \
+					FAILED|TIMED_OUT|ABORTED) \
+						echo "    WARNING: prime execution ended $$S (nightly schedule will catch up)"; break;; \
+					*) sleep 6;; \
+				esac; \
+			done; \
+		done; \
+		echo "    done"; \
+	fi
 
 # ─── Template validation (no deploy) ──────────────────────────
 # Validates the template with CloudFormation's validator. This does not create
