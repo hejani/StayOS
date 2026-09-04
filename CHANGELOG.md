@@ -5,6 +5,47 @@ All notable changes to **StayOS** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-09-04
+
+Platform reliability and reach: adds the shared Unified Data Orchestrator so the
+demo dataset stays current on its own, a public marketing landing page for the
+StayOS shell, and a set of correctness and security fixes. No breaking changes.
+
+### Added
+- **Unified Data Orchestrator** (`shared/data-orchestrator/`, `StackPrefix`
+  `stayos-data`) — a Step Functions state machine (Quiesce → Generate →
+  Reconcile → UnQuiesce → RegenerateBrief → PrimeBaseline) plus one per-property
+  EventBridge Scheduler rule that re-anchors the deterministic 30-day window at
+  each property's local midnight via idempotent upsert (pausing PULSE evaluation
+  during the rewrite so no alert storm fires), then regenerates that day's brief.
+  It is additive and never bulk-rewrites or re-seeds the live tables.
+- **Prime-on-deploy** — the orchestrator deploy step primes today's data for
+  every pilot property (idempotent, failure-isolated), so each GM has a current
+  daily brief immediately after `make deploy-all` with no manual step.
+- **StayOS marketing landing page** — a public landing page at the shell root
+  (`/`) that explains StayOS and its two live features (LUMI and PULSE) before
+  sign-in; a Sign In call-to-action reveals the login form, and authenticated
+  visitors still land on the feature launcher grid (SSO preserved).
+
+### Changed
+- `make deploy-all` now also deploys the shared Data Orchestrator, wired to the
+  live LUMI table names and PULSE rule-evaluator stream mappings.
+- Shortened PULSE CloudFormation stack descriptions to under 25 words.
+
+### Fixed
+- **VIP arrivals** — `get_vip_guests` now falls back to a live reservations
+  query when a brief for the current date is missing, so it never reports a
+  false "no VIP arrivals"; the fallback is deduped and capped to match the brief.
+- **PULSE triage** — fixed an out-of-order (OOO) `triageBrief` placeholder leak
+  by threading the real block id.
+- **LUMI voice agent** — corrected `get_revenue` parameter names to match the
+  tool schema.
+
+### Security
+- Merged security fixes (dependency bumps and verified secret-scan allowlists).
+- Removed a real AWS account ID from `docs/data-model.md` and stopped tracking
+  local working-notes docs.
+
 ## [1.0.0] - 2026-08-21
 
 Initial version 1 — the StayOS reference implementation (prototype / customer
@@ -52,4 +93,5 @@ on AWS (`us-east-1`).
   30-minute alert auto-resolve sweeper, and 4 CloudFormation nested stacks.
   Served at `/pulse`.
 
+[1.1.0]: https://github.com/hejani/StayOS/releases/tag/v1.1.0
 [1.0.0]: https://github.com/hejani/StayOS/releases/tag/v1.0

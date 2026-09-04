@@ -92,5 +92,6 @@
   populated `shared/auth/` module and why the infrastructure carve-out is still
   deferred.
 - [CONTRIBUTING.md](CONTRIBUTING.md): how to scope a PR to one feature.
-- [CHANGELOG.md](CHANGELOG.md): notable changes per release (`v1.4` is the only
-  release tag to date).
+- [CHANGELOG.md](CHANGELOG.md): notable changes per release; the latest entry is
+  `1.1.0` (the shared Data Orchestrator, the shell marketing landing page, plus
+  reliability and security fixes).
