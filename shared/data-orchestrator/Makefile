@@ -51,6 +51,24 @@ PULSE_SEED_LAMBDA_ARN ?=
 # upsert-only). Kept at the template default for an additive deploy.
 SEED_TRIGGER ?= 1
 
+# ─── LUMI resource names threaded into the orchestrator (AI-1/AI-2/AI-3) ──────
+# The Generate/Reconcile/RegenerateBrief steps target the live LUMI operational
+# tables + settings + orchestrator. Derived from the LUMI StackPrefix so they
+# follow whatever LUMI is deployed as (today stayos-*). Overridable.
+LUMI_RESERVATIONS_TABLE ?= $(LUMI_STACK_PREFIX)-reservations
+LUMI_ROOMS_TABLE        ?= $(LUMI_STACK_PREFIX)-rooms
+LUMI_GUESTS_TABLE       ?= $(LUMI_STACK_PREFIX)-guests
+LUMI_REVENUES_TABLE     ?= $(LUMI_STACK_PREFIX)-revenues
+LUMI_WORK_ORDERS_TABLE  ?= $(LUMI_STACK_PREFIX)-work-orders
+LUMI_SETTINGS_TABLE     ?= $(LUMI_STACK_PREFIX)-settings
+LUMI_ORCHESTRATOR_FN    ?= $(LUMI_STACK_PREFIX)-orchestrator
+
+# PULSE rule-evaluator function whose DynamoDB-stream ESMs the Quiesce step
+# toggles (AI-4). Derived from the PULSE StackPrefix. The ESM UUIDs are resolved
+# LIVE at deploy time (they change on PULSE redeploy) - see the deploy target.
+PULSE_STACK_PREFIX      ?= pulse
+PULSE_RULE_EVALUATOR_FN ?= $(PULSE_STACK_PREFIX)-rule-evaluator
+
 # The six step-Lambda handlers + starters all live in handlers/ and are bundled
 # into one zip. AWS profile flag threaded into every aws call.
 AWS_PROFILE_FLAG := $(if $(AWS_PROFILE),--profile $(AWS_PROFILE),)
@@ -97,25 +115,55 @@ ensure-bucket:
 # so it is vendored directly into the zip (pip install -t) alongside the handler
 # modules. All other imports are boto3/stdlib (present in the python3.12
 # runtime); the dataset_generator_shim adds the LUMI generator path at runtime.
+#
+# QUIESCE SEAM (AI-4): the Quiesce/UnQuiesce steps import the PULSE-owned seam
+# `pulse.rule_engine.quiesce` via pulse_quiesce_shim. For that import to resolve
+# at runtime the PULSE `pulse` package must be on the path, so we vendor it into
+# the zip (the shim also honors PULSE_BACKEND_SRC_PATH). Without this the seam is
+# unavailable and quiesce degrades to a no-op even when ESM UUIDs are set.
+PULSE_BACKEND_SRC := ../../pulse/backend/src
+LUMI_SEED_DATA_SRC := ../../lumi/backend/functions/seed-data
 package:
-	@echo "[2/4] Packaging orchestrator Lambda (handlers + vendored deps in one zip)..."
+	@echo "[2/4] Packaging orchestrator Lambda (handlers + deps + generators + quiesce seam)..."
 	@rm -rf build && mkdir -p build/pkg
 	@cp handlers/*.py build/pkg/
 	@pip3 install -r requirements.txt -t build/pkg/ \
 		--quiet --disable-pip-version-check
+	@# Vendor the LUMI dataset_generator package so `import dataset_generator`
+	@# (via dataset_generator_shim) resolves at runtime - Generate/Reconcile reuse it.
+	@if [ -d "$(LUMI_SEED_DATA_SRC)/dataset_generator" ]; then \
+		cp -R "$(LUMI_SEED_DATA_SRC)/dataset_generator" build/pkg/dataset_generator; \
+	else \
+		echo "    ERROR: LUMI dataset_generator not found at $(LUMI_SEED_DATA_SRC)"; exit 1; \
+	fi
+	@# Vendor the PULSE `pulse` package so the quiesce seam import resolves.
+	@if [ -d "$(PULSE_BACKEND_SRC)/pulse" ]; then \
+		cp -R "$(PULSE_BACKEND_SRC)/pulse" build/pkg/pulse; \
+	else \
+		echo "    WARNING: PULSE package not found at $(PULSE_BACKEND_SRC)/pulse - quiesce will no-op"; \
+	fi
 	@cd build/pkg && zip -r ../data-orchestrator.zip . \
-		-x "*.pyc" "__pycache__/*" "*.dist-info/*" "*.egg-info/*" > /dev/null
+		-x "*.pyc" "__pycache__/*" "*.dist-info/*" "*.egg-info/*" "*/tests/*" "tests/*" > /dev/null
 	@$(AWS) s3 cp build/data-orchestrator.zip s3://$(DEPLOY_BUCKET)/$(LAMBDA_S3_KEY) --quiet
 	@echo "    done"
 
 # ─── Step 3: Deploy the CloudFormation stack ──────────────────
 # StackPrefix=stayos-data; DeployBucket/LambdaCodeS3Key point CloudFormation at
 # the artifact packaged above. Seed Lambda ARNs are passed through (empty by
-# default for Option 1). CAPABILITY_NAMED_IAM: the template creates named IAM
-# roles with the AWS::Region suffix.
+# default for Option 1). The LUMI table/settings/orchestrator names and the live
+# PULSE rule-evaluator ESM UUIDs (resolved below) are threaded in so the
+# Generate/Reconcile/RegenerateBrief/Quiesce steps target the real resources.
+# CAPABILITY_NAMED_IAM: the template creates named IAM roles with the Region suffix.
 deploy-infra:
 	@echo "[3/4] Deploying orchestrator stack (this may take a few minutes)..."
-	@$(AWS) cloudformation deploy \
+	@# Resolve the live PULSE rule-evaluator ESM UUIDs (AI-4). They change on a
+	@# PULSE redeploy, so query them now rather than hardcoding. Empty (PULSE not
+	@# deployed / no mappings) → quiesce safely no-ops.
+	@ESM_UUIDS=$$($(AWS) lambda list-event-source-mappings \
+		--function-name $(PULSE_RULE_EVALUATOR_FN) \
+		--query "EventSourceMappings[].UUID" --output text 2>/dev/null | tr '\t' ',' || echo ""); \
+	echo "    rule-evaluator ESM UUIDs: $${ESM_UUIDS:-<none - quiesce no-ops>}"; \
+	$(AWS) cloudformation deploy \
 		--stack-name $(STACK_NAME) \
 		--template-file infrastructure/data-orchestrator.yaml \
 		--parameter-overrides \
@@ -125,6 +173,14 @@ deploy-infra:
 			SeedTrigger=$(SEED_TRIGGER) \
 			LumiSeedLambdaArn=$(LUMI_SEED_LAMBDA_ARN) \
 			PulseSeedLambdaArn=$(PULSE_SEED_LAMBDA_ARN) \
+			ReservationsTableName=$(LUMI_RESERVATIONS_TABLE) \
+			RoomsTableName=$(LUMI_ROOMS_TABLE) \
+			GuestsTableName=$(LUMI_GUESTS_TABLE) \
+			RevenuesTableName=$(LUMI_REVENUES_TABLE) \
+			WorkOrdersTableName=$(LUMI_WORK_ORDERS_TABLE) \
+			SettingsTableName=$(LUMI_SETTINGS_TABLE) \
+			LumiOrchestratorFunctionName=$(LUMI_ORCHESTRATOR_FN) \
+			RuleEngineEsmUuids="$$ESM_UUIDS" \
 		--capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
 		--no-fail-on-empty-changeset
 	@echo "    done"

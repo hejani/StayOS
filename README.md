@@ -52,7 +52,11 @@ StayOS/
 ├── stayos-shell/  # StayOS shell: unified login + feature launcher, served at /
 ├── lumi/          # Feature 1: daily GM brief (backend, frontend, infra, docs), served at /lumi
 ├── pulse/         # Feature 2: real-time alerting (backend, frontend, infra, docs), served at /pulse
-└── shared/        # Cross-feature shared layer: shared/auth/ (@stayos/auth); infra carve-out deferred
+└── shared/        # Cross-feature shared layer:
+    ├── auth/                # @stayos/auth (shared SSO session)
+    └── data-orchestrator/   # Unified Data Orchestrator (StackPrefix stayos-data):
+                             # Step Functions state machine that owns the daily
+                             # per-property roll-forward + PULSE baseline priming
 ```
 ## Deployment
 
@@ -79,11 +83,15 @@ make deploy-all APP_PASSWORD=YourSecurePassword123! PROFILE=my-other-account REG
 five operational-table stream ARNs, the shared Gateway endpoint, the Tool Lambda
 ARN), and threads them into the PULSE deploy — so PULSE is never deployed
 standalone from here. It also registers the shared Gateway tools, builds and
-deploys the PULSE Triage Agent, and publishes the PULSE PWA to `/pulse`.
+deploys the PULSE Triage Agent, publishes the PULSE PWA to `/pulse`, and finally
+deploys the shared **Data Orchestrator** (`stayos-data`) — the additive
+roll-forward + PULSE-baseline layer, wired to the live LUMI table names and PULSE
+rule-evaluator stream mappings. The orchestrator is additive: it does not
+re-seed or bulk-rewrite the live dataset.
 
 Run `make help` from the repo root for the full target list (per-feature
-deploys, tests, and other targets). See each feature's README for its own
-targets and internals.
+deploys, tests, and other targets — including `make data-<target>` for the
+orchestrator). See each feature's README for its own targets and internals.
 
 ## Data Model
 
@@ -96,6 +104,14 @@ partitioned by `propertyId`, which is the data-isolation boundary between
 properties. The 5 dataset tables seed once, are read-only at runtime
 (`Query`/`GetItem`), and stream changes (`NEW_AND_OLD_IMAGES`) — which is what
 PULSE's rule engine evaluates to fire real-time alerts.
+
+The shared **Data Orchestrator** (`shared/data-orchestrator/`) re-anchors this
+dataset daily: one per-property EventBridge schedule fires at each property's
+local midnight and rolls the deterministic 30-day window forward via idempotent
+upsert (pausing PULSE evaluation during the rewrite so no alert storm fires),
+then regenerates that day's brief. It is additive and never bulk-rewrites or
+re-seeds the live tables. See
+[`docs/data-model.md`](docs/data-model.md) for the full model.
 
 **The canonical schema reference is [`docs/data-model.md`](docs/data-model.md)**
 — full table schemas, keys/GSIs, enumerated values, relationships, and seed

@@ -207,17 +207,28 @@ deploy-all:
 		     echo "exists (SSM /pulse/triage/runtime-arn); re-run: make deploy-all ... to retry."; \
 		     echo ""; exit 1; }; \
 	echo ""; \
-	echo "══ [5/5] Publishing the PULSE PWA to /pulse on the shared LUMI CloudFront ══"; \
+	echo "══ [5/6] Publishing the PULSE PWA to /pulse on the shared LUMI CloudFront ══"; \
 	$(MAKE) -C pulse deploy-frontend PROFILE='$(PROFILE)' REGION='$(REGION)' \
 		USER_POOL_CLIENT_ID="$$USER_POOL_CLIENT_ID" \
 		COGNITO_REGION='$(REGION)' \
 		|| { echo ""; \
 		     echo "ERROR: PULSE frontend publish failed. Backend is fully deployed."; \
 		     echo "Re-run only this step: make pulse-deploy-frontend PROFILE=$(PROFILE) REGION=$(REGION) USER_POOL_CLIENT_ID=<id>"; \
+		     echo ""; exit 1; }; \
+	echo ""; \
+	echo "══ [6/6] Deploying the shared Data Orchestrator (roll-forward + baseline) ══"; \
+	$(MAKE) -C shared/data-orchestrator deploy AWS_PROFILE='$(PROFILE)' REGION='$(REGION)' \
+		LUMI_STACK_PREFIX='$(LUMI_STACK_PREFIX)' PULSE_STACK_PREFIX='pulse' \
+		|| { echo ""; \
+		     echo "ERROR: Data Orchestrator deploy failed. LUMI + PULSE are fully deployed"; \
+		     echo "and healthy - do NOT redeploy them. The orchestrator is additive (it does"; \
+		     echo "not re-seed live data). Re-run only this step:"; \
+		     echo "  make data-deploy AWS_PROFILE=$(PROFILE) REGION=$(REGION) LUMI_STACK_PREFIX=$(LUMI_STACK_PREFIX)"; \
 		     echo ""; exit 1; }
 	@echo ""
 	@echo "════════════════════════════════════════════════════════════════"
-	@echo "  StayOS deployed end to end: LUMI + PULSE (stack, triage, frontend)."
+	@echo "  StayOS deployed end to end: LUMI + PULSE + Data Orchestrator"
+	@echo "  (stack, triage, frontend, and the additive roll-forward layer)."
 	@echo "  PULSE PWA: <lumi-cloudfront-domain>/pulse/"
 	@echo "════════════════════════════════════════════════════════════════"
 
