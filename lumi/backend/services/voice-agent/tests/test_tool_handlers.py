@@ -122,7 +122,7 @@ class TestDispatchRouting:
             }
         }
 
-        result = await dispatch_tool("get_revenue", "PROP-001", {"startDate": "2025-01-15"})
+        result = await dispatch_tool("get_revenue", "PROP-001", {"start_date": "2025-01-15"})
 
         assert result["status"] == "success"
         assert "adr" in result["data"]
@@ -603,7 +603,11 @@ class TestHandlerResponseStructure:
             }
         }
 
-        result = await dispatch_tool("get_revenue", "PROP-001", {"startDate": "2025-01-15"})
+        result = await dispatch_tool(
+            "get_revenue",
+            "PROP-001",
+            {"start_date": "2025-01-15", "end_date": "2025-01-15"},
+        )
 
         assert result["status"] == "success"
         data = result["data"]
@@ -691,3 +695,46 @@ class TestHandlerResponseStructure:
         assert result["status"] == "success"
         assert result["data"]["vipCount"] == 0
         assert result["data"]["guests"] == []
+
+
+
+# ---------------------------------------------------------------------------
+# Schema/handler parameter-name contract
+# ---------------------------------------------------------------------------
+
+
+class TestToolSchemaHandlerContract:
+    """Guard that each handler accepts exactly the keys its schema declares.
+
+    dispatch_tool forwards Nova Sonic's tool input verbatim as **params to the
+    handler. If a handler parameter is spelled differently from the schema key
+    (e.g. camelCase startDate vs snake_case start_date), the call raises
+    TypeError at runtime and the tool reports "temporarily unavailable". This
+    test would have caught the get_revenue start_date/end_date regression.
+    """
+
+    def test_handler_params_match_schema_keys(self) -> None:
+        """Every schema property key is an accepted kwarg of its handler."""
+        import inspect
+        import json
+
+        from tool_handlers import TOOL_REGISTRY
+        from tools_config import TOOL_CONFIGURATION
+
+        for tool in TOOL_CONFIGURATION:
+            spec = tool["toolSpec"]
+            tool_name = spec["name"]
+            schema = json.loads(spec["inputSchema"]["json"])
+            schema_keys = set(schema.get("properties", {}).keys())
+
+            handler = TOOL_REGISTRY[tool_name]
+            handler_params = set(inspect.signature(handler).parameters.keys())
+
+            # property_id is injected by dispatch_tool from session context,
+            # not sent by the model, so it is never a schema key.
+            missing = schema_keys - handler_params
+            assert not missing, (
+                f"{tool_name}: schema keys {missing} are not accepted by the "
+                f"handler signature {handler_params}. Nova Sonic sends these "
+                f"keys verbatim, so a mismatch raises TypeError at dispatch."
+            )
