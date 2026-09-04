@@ -15,9 +15,12 @@ interface LoginFormProps {
   onSubmit: (email: string, password: string) => void | Promise<void>;
   loading: boolean;
   error: string | null;
+  // Optional: returns to the marketing landing page. When provided, a "Back"
+  // affordance is rendered so a visitor can leave the login form.
+  onBack?: () => void;
 }
 
-export default function LoginForm({ onSubmit, loading, error }: LoginFormProps) {
+export default function LoginForm({ onSubmit, loading, error, onBack }: LoginFormProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
@@ -77,6 +80,17 @@ export default function LoginForm({ onSubmit, loading, error }: LoginFormProps) 
           {loading ? 'Signing in...' : 'Sign In'}
         </button>
       </form>
+
+      {/* Return to the marketing landing page (only when a handler is wired). */}
+      {onBack && (
+        <button
+          type="button"
+          onClick={onBack}
+          className="text-xs text-gray-500 hover:text-white transition-colors mt-6"
+        >
+          &larr; Back to home
+        </button>
+      )}
 
       <p className="text-[10px] text-gray-600 mt-8">&copy; 2026 Aloha Hotels &amp; Resorts</p>
       <p className="text-[9px] text-gray-700 mt-1 text-center max-w-xs">

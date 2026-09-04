@@ -36,10 +36,20 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('StayOS shell - unauthenticated', () => {
-  it('renders the login form when there is no session', async () => {
+  it('renders the marketing landing page when there is no session', async () => {
     mockedIsAuthenticated.mockReturnValue(false);
     render(<ShellPage />);
-    expect(await screen.findByRole('button', { name: /sign in/i })).toBeInTheDocument();
+    // Landing page hero + live-feature story, not the login form.
+    expect(await screen.findByRole('heading', { name: /live today/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'LUMI' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'PULSE' })).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('Email')).not.toBeInTheDocument();
+  });
+
+  it('reveals the login form when a Sign In call-to-action is clicked', async () => {
+    mockedIsAuthenticated.mockReturnValue(false);
+    render(<ShellPage />);
+    fireEvent.click((await screen.findAllByRole('button', { name: /sign in/i }))[0]);
     expect(screen.getByPlaceholderText('Email')).toBeInTheDocument();
   });
 
@@ -48,13 +58,15 @@ describe('StayOS shell - unauthenticated', () => {
     mockedSignIn.mockRejectedValue(new Error('Incorrect username or password.'));
 
     render(<ShellPage />);
-    fireEvent.change(await screen.findByPlaceholderText('Email'), {
+    // Enter the login view first.
+    fireEvent.click((await screen.findAllByRole('button', { name: /sign in/i }))[0]);
+    fireEvent.change(screen.getByPlaceholderText('Email'), {
       target: { value: 'gm@example.com' },
     });
     fireEvent.change(screen.getByPlaceholderText('Password'), {
       target: { value: 'wrong' },
     });
-    fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^sign in$/i }));
 
     await waitFor(() => {
       expect(screen.getByRole('alert')).toHaveTextContent('Incorrect username or password.');
@@ -73,13 +85,15 @@ describe('StayOS shell - unauthenticated', () => {
     });
 
     render(<ShellPage />);
-    fireEvent.change(await screen.findByPlaceholderText('Email'), {
+    // Enter the login view first.
+    fireEvent.click((await screen.findAllByRole('button', { name: /sign in/i }))[0]);
+    fireEvent.change(screen.getByPlaceholderText('Email'), {
       target: { value: 'gm@example.com' },
     });
     fireEvent.change(screen.getByPlaceholderText('Password'), {
       target: { value: 'Password123' },
     });
-    fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^sign in$/i }));
 
     // LUMI + PULSE launcher cards appear once authenticated.
     expect(await screen.findByRole('link', { name: 'LUMI' })).toBeInTheDocument();
