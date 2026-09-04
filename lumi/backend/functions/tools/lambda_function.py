@@ -414,6 +414,69 @@ def _query_confirmed_arrivals(
     return reservations
 
 
+def _query_vip_arrivals_live(
+    property_id: str,
+    arrival_date: str,
+) -> List[Dict[str, Any]]:
+    """Live fallback: VIP-tier arrivals for a date, direct from reservations.
+
+    Used by :func:`get_vip_guests` when no curated brief exists for the date
+    (fresh deploy before the first roll-forward, or a reference-date mismatch).
+    Queries the propertyId-arrivalDate-index for the property's arrivals on the
+    date, keeps only VIP loyalty tiers (:data:`VIP_TIERS`), and shapes each into
+    the same fields the brief's ``vipArrivals`` entries use so the caller/UI is
+    consistent. Read-only and property-scoped. ``sensitiveNotes`` is never
+    included (it is not read from reservations here).
+
+    Args:
+        property_id: The property identifier (GSI partition key).
+        arrival_date: ISO date string (YYYY-MM-DD) of the arrival night.
+
+    Returns:
+        List of VIP-arrival dicts (may be empty) sorted by loyalty rank then ETA.
+    """
+    table = _dynamodb_resource.Table(RESERVATIONS_TABLE_NAME)
+    query_kwargs: Dict[str, Any] = {
+        "IndexName": "propertyId-arrivalDate-index",
+        "KeyConditionExpression": (
+            Key("propertyId").eq(property_id) & Key("arrivalDate").eq(arrival_date)
+        ),
+    }
+
+    vips: List[Dict[str, Any]] = []
+    while True:
+        response = table.query(**query_kwargs)
+        for reservation in response.get("Items", []):
+            tier = str(reservation.get("loyaltyTier") or "").upper()
+            if tier not in VIP_TIERS:
+                continue
+            # Skip cancelled bookings - they are not arriving.
+            if str(reservation.get("status") or "").upper() == "CANCELLED":
+                continue
+            vips.append({
+                "guestId": reservation.get("guestId"),
+                "guestName": reservation.get("guestName"),
+                "loyaltyTier": reservation.get("loyaltyTier"),
+                "roomNumber": reservation.get("roomNumber"),
+                "roomType": reservation.get("roomType"),
+                "estimatedArrival": reservation.get("estimatedArrival"),
+                "specialRequests": reservation.get("specialRequests"),
+            })
+        if "LastEvaluatedKey" not in response:
+            break
+        query_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+
+    # Highest-tier first (negate the rank, where higher rank = more elite),
+    # then by ETA when present, for a stable, useful order.
+    vips.sort(
+        key=lambda v: (
+            -_loyalty_rank(v.get("loyaltyTier")),
+            str(v.get("estimatedArrival") or ""),
+        )
+    )
+    return vips
+
+
 @tracer.capture_method
 def get_occupancy(property_id: str, tool_input: Dict[str, Any]) -> Dict[str, Any]:
     """Query occupancy metrics from the revenues table for a given date.
@@ -526,16 +589,23 @@ def get_vip_guests(property_id: str, tool_input: Dict[str, Any]) -> Dict[str, An
     returns the same VIP list that the frontend UI displays. Strips
     sensitiveNotes from each guest entry before returning.
 
+    When no brief exists for the date (e.g. a fresh deploy before the first
+    per-property roll-forward has generated today's brief, or a reference-date
+    mismatch), it falls back to a LIVE query of the reservations table for that
+    date's VIP-tier arrivals, so a missing brief degrades gracefully instead of
+    reporting a false "no VIP arrivals". The fallback result is flagged with
+    ``source: "live"`` so callers can tell it did not come from a curated brief.
+
     Args:
         property_id: Property scope from the calling agent's session context.
         tool_input: Tool parameters with optional 'date' field.
 
     Returns:
-        Success dict with VIP guest list from the brief.
+        Success dict with VIP guest list from the brief (or a live fallback).
     """
     date_str = tool_input.get("date") or _today_iso()
 
-    # Read the brief's vipArrivals from stayos-briefs table
+    # Read the brief's vipArrivals from the briefs table
     briefs_table = _dynamodb_resource.Table(BRIEFS_TABLE_NAME)
     response = briefs_table.get_item(
         Key={"propertyId": property_id, "briefDate": date_str},
@@ -543,12 +613,27 @@ def get_vip_guests(property_id: str, tool_input: Dict[str, Any]) -> Dict[str, An
     item = response.get("Item")
 
     if not item or not item.get("vipArrivals"):
+        # No curated brief for this date -> fall back to a live reservations
+        # query so we never report a false "no VIP arrivals" (e.g. before the
+        # first roll-forward on a fresh deploy). Read-only, property-scoped.
+        live_vips = _query_vip_arrivals_live(property_id, date_str)
+        if live_vips:
+            return {
+                "status": "success",
+                "data": _decimal_to_native({
+                    "date": date_str,
+                    "vipCount": len(live_vips),
+                    "guests": live_vips,
+                    "source": "live",
+                }),
+            }
         return {
             "status": "success",
             "data": {
                 "date": date_str,
                 "vipCount": 0,
                 "guests": [],
+                "source": "live",
                 "message": f"No VIP arrivals found for {date_str}",
             },
         }
@@ -565,6 +650,7 @@ def get_vip_guests(property_id: str, tool_input: Dict[str, Any]) -> Dict[str, An
             "date": date_str,
             "vipCount": len(vip_arrivals),
             "guests": vip_arrivals,
+            "source": "brief",
         }),
     }
 

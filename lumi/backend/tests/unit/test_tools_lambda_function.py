@@ -327,3 +327,91 @@ class TestPropertyScopingAndRegistry:
             "get_walkable_guests",
             "get_room_move_candidates",
         }.issubset(registry_names)
+
+
+
+class TestGetVipGuestsLiveFallback:
+    """get_vip_guests falls back to a live reservations query when no brief exists.
+
+    Fresh-account / open-source safety: before the first roll-forward generates
+    a brief, the tool must not report a false "no VIP arrivals" - it queries the
+    reservations arrival-date index for that date's VIP-tier guests.
+    """
+
+    def test_falls_back_to_live_vip_arrivals_when_no_brief(
+        self, tools: Tuple[ModuleType, MagicMock]
+    ) -> None:
+        module, mock_resource = tools
+        # No brief for the date.
+        mock_resource.Table.return_value.get_item.return_value = {}
+        # Reservations arriving today: 2 VIP tiers + 1 non-VIP + 1 cancelled VIP.
+        mock_resource.Table.return_value.query.return_value = {
+            "Items": [
+                {"guestId": "G1", "guestName": "A Platinum", "loyaltyTier": "PLATINUM",
+                 "roomNumber": "1105", "roomType": "KING", "status": "CONFIRMED",
+                 "estimatedArrival": "2026-09-04T18:00:00-05:00"},
+                {"guestId": "G2", "guestName": "B Ambassador", "loyaltyTier": "AMBASSADOR",
+                 "roomNumber": "2401", "roomType": "SUITE", "status": "CONFIRMED",
+                 "estimatedArrival": "2026-09-04T14:00:00-05:00"},
+                {"guestId": "G3", "guestName": "C Member", "loyaltyTier": "MEMBER",
+                 "roomNumber": "300", "roomType": "KING", "status": "CONFIRMED"},
+                {"guestId": "G4", "guestName": "D Cancelled", "loyaltyTier": "TITANIUM",
+                 "roomNumber": "400", "roomType": "KING", "status": "CANCELLED"},
+            ]
+        }
+
+        result = module.get_vip_guests("ALOHA-CHI-001", {"date": "2026-09-04"})
+
+        assert result["status"] == "success"
+        data = result["data"]
+        assert data["source"] == "live"
+        # Only the 2 non-cancelled VIP-tier guests are returned.
+        assert data["vipCount"] == 2
+        names = [g["guestName"] for g in data["guests"]]
+        assert names == ["B Ambassador", "A Platinum"]  # AMBASSADOR ranks above PLATINUM
+        # Non-VIP (MEMBER) and cancelled TITANIUM excluded.
+        assert "C Member" not in names and "D Cancelled" not in names
+
+    def test_live_fallback_empty_when_no_vip_arrivals(
+        self, tools: Tuple[ModuleType, MagicMock]
+    ) -> None:
+        module, mock_resource = tools
+        mock_resource.Table.return_value.get_item.return_value = {}
+        mock_resource.Table.return_value.query.return_value = {
+            "Items": [
+                {"guestId": "G3", "guestName": "C Member", "loyaltyTier": "MEMBER",
+                 "roomNumber": "300", "status": "CONFIRMED"},
+            ]
+        }
+
+        result = module.get_vip_guests("ALOHA-CHI-001", {"date": "2026-09-04"})
+
+        assert result["status"] == "success"
+        assert result["data"]["vipCount"] == 0
+        assert result["data"]["guests"] == []
+        assert result["data"]["source"] == "live"
+
+    def test_brief_present_takes_precedence_over_live(
+        self, tools: Tuple[ModuleType, MagicMock]
+    ) -> None:
+        module, mock_resource = tools
+        # A curated brief exists -> use it, do not fall back.
+        mock_resource.Table.return_value.get_item.return_value = {
+            "Item": {
+                "propertyId": "ALOHA-CHI-001",
+                "briefDate": "2026-09-04",
+                "vipArrivals": [
+                    {"guestName": "Brief Guest", "loyaltyTier": "PLATINUM",
+                     "sensitiveNotes": "should be stripped"},
+                ],
+            }
+        }
+
+        result = module.get_vip_guests("ALOHA-CHI-001", {"date": "2026-09-04"})
+
+        assert result["data"]["source"] == "brief"
+        assert result["data"]["vipCount"] == 1
+        # sensitiveNotes stripped.
+        assert "sensitiveNotes" not in result["data"]["guests"][0]
+        # query (live fallback) must NOT have been called.
+        mock_resource.Table.return_value.query.assert_not_called()
