@@ -56,6 +56,11 @@ ESTATE_PROPERTY_IDS_RAW: str = os.environ.get("ESTATE_PROPERTY_IDS", "")
 # VIP loyalty tiers that qualify for VIP arrival alerts
 VIP_TIERS: Set[str] = {"AMBASSADOR", "TITANIUM", "PLATINUM"}
 
+# Cap for the live VIP-arrivals fallback in get_vip_guests, mirroring the
+# curated brief's MAX_VIP_ARRIVALS so the fallback is a tight, GM-useful list
+# (the seed tags most reservations VIP-tier, so an uncapped query is a firehose).
+MAX_VIP_ARRIVALS_FALLBACK: int = 7
+
 # Internal composite keys to strip from responses (GSI implementation detail)
 INTERNAL_KEYS: Set[str] = {"statusRoomNumber", "statusCreatedAt"}
 
@@ -444,6 +449,7 @@ def _query_vip_arrivals_live(
     }
 
     vips: List[Dict[str, Any]] = []
+    seen_guest_ids: set = set()
     while True:
         response = table.query(**query_kwargs)
         for reservation in response.get("Items", []):
@@ -453,6 +459,15 @@ def _query_vip_arrivals_live(
             # Skip cancelled bookings - they are not arriving.
             if str(reservation.get("status") or "").upper() == "CANCELLED":
                 continue
+            # Dedupe by guest: the seed reuses a small VIP name pool across many
+            # reservations, so one guest can appear on several bookings for the
+            # day. Match the brief's "unique VIP arrivals" contract - one entry
+            # per guest (first booking seen).
+            guest_id = str(reservation.get("guestId") or "")
+            if guest_id and guest_id in seen_guest_ids:
+                continue
+            if guest_id:
+                seen_guest_ids.add(guest_id)
             vips.append({
                 "guestId": reservation.get("guestId"),
                 "guestName": reservation.get("guestName"),
@@ -474,7 +489,9 @@ def _query_vip_arrivals_live(
             str(v.get("estimatedArrival") or ""),
         )
     )
-    return vips
+    # Cap to the same size the curated brief shows so the fallback is a tight,
+    # GM-useful list rather than every VIP-tier booking for the day.
+    return vips[:MAX_VIP_ARRIVALS_FALLBACK]
 
 
 @tracer.capture_method

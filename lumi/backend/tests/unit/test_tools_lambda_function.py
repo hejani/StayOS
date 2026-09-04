@@ -415,3 +415,40 @@ class TestGetVipGuestsLiveFallback:
         assert "sensitiveNotes" not in result["data"]["guests"][0]
         # query (live fallback) must NOT have been called.
         mock_resource.Table.return_value.query.assert_not_called()
+
+
+
+    def test_live_fallback_dedupes_by_guest_and_caps(
+        self, tools: Tuple[ModuleType, MagicMock]
+    ) -> None:
+        """Live fallback returns one entry per guest, capped at MAX_VIP_ARRIVALS_FALLBACK.
+
+        The seed reuses a small VIP name pool across many reservations, so a raw
+        arrival-date query returns the same guest on many bookings. The fallback
+        must match the curated brief's contract: unique guests, capped.
+        """
+        module, mock_resource = tools
+        mock_resource.Table.return_value.get_item.return_value = {}
+        # 3 bookings for G1 (dup) + 10 distinct other VIP guests = should
+        # dedupe G1 to one and cap the total at the fallback max (7).
+        items = [
+            {"guestId": "G1", "guestName": "Repeat Guest", "loyaltyTier": "PLATINUM",
+             "roomNumber": str(700 + i), "status": "CONFIRMED"}
+            for i in range(3)
+        ] + [
+            {"guestId": f"G{n}", "guestName": f"Guest {n}", "loyaltyTier": "TITANIUM",
+             "roomNumber": str(800 + n), "status": "CONFIRMED"}
+            for n in range(2, 12)
+        ]
+        mock_resource.Table.return_value.query.return_value = {"Items": items}
+
+        result = module.get_vip_guests("ALOHA-MIA-001", {"date": "2026-09-04"})
+
+        guests = result["data"]["guests"]
+        assert result["data"]["source"] == "live"
+        # Capped at the fallback max.
+        assert result["data"]["vipCount"] == module.MAX_VIP_ARRIVALS_FALLBACK
+        assert len(guests) == module.MAX_VIP_ARRIVALS_FALLBACK
+        # G1 appears at most once (deduped by guestId).
+        g1_count = sum(1 for g in guests if g["guestId"] == "G1")
+        assert g1_count <= 1
