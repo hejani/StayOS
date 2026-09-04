@@ -92,14 +92,19 @@ ensure-bucket:
 
 # ─── Step 2: Package the orchestrator Lambda zip ──────────────
 # All handlers share one artifact (the template gives each Lambda the same
-# S3Key with a distinct Handler). No third-party deps: the handlers use only
-# boto3/stdlib (present in the python3.12 runtime); the dataset_generator_shim
-# adds the LUMI generator path at runtime, so no dependency layer is built.
+# S3Key with a distinct Handler). The handlers depend on aws-lambda-powertools
+# (Logger) per the repo PYQUALITY rules; it is NOT in the base Lambda runtime,
+# so it is vendored directly into the zip (pip install -t) alongside the handler
+# modules. All other imports are boto3/stdlib (present in the python3.12
+# runtime); the dataset_generator_shim adds the LUMI generator path at runtime.
 package:
-	@echo "[2/4] Packaging orchestrator Lambda (all handlers in one zip)..."
-	@mkdir -p build
-	@cd handlers && zip -r ../build/data-orchestrator.zip . \
-		-x "*.pyc" "__pycache__/*" ".mypy_cache/*" ".pytest_cache/*" ".ruff_cache/*" "*.dist-info/*" > /dev/null
+	@echo "[2/4] Packaging orchestrator Lambda (handlers + vendored deps in one zip)..."
+	@rm -rf build && mkdir -p build/pkg
+	@cp handlers/*.py build/pkg/
+	@pip3 install -r requirements.txt -t build/pkg/ \
+		--quiet --disable-pip-version-check
+	@cd build/pkg && zip -r ../data-orchestrator.zip . \
+		-x "*.pyc" "__pycache__/*" "*.dist-info/*" "*.egg-info/*" > /dev/null
 	@$(AWS) s3 cp build/data-orchestrator.zip s3://$(DEPLOY_BUCKET)/$(LAMBDA_S3_KEY) --quiet
 	@echo "    done"
 
