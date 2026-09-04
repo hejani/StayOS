@@ -52,9 +52,15 @@ def _candidate_paths() -> List[Path]:
         candidates.append(Path(env_path))
 
     # Repo-relative fallback: handlers/ -> data-orchestrator/ -> shared/ ->
-    # <repo root> -> pulse/backend/src.
-    repo_root = Path(__file__).resolve().parents[3]
-    candidates.append(repo_root / "pulse" / "backend" / "src")
+    # <repo root> -> pulse/backend/src. Only applicable in the repo layout; in a
+    # packaged Lambda this file sits at the zip root (the `pulse` package is
+    # vendored alongside it and resolves via sys.path), so there are not enough
+    # parents - guard the index so import never crashes (would otherwise raise
+    # IndexError at import time and take the whole handler down).
+    resolved = Path(__file__).resolve()
+    if len(resolved.parents) > 3:
+        repo_root = resolved.parents[3]
+        candidates.append(repo_root / "pulse" / "backend" / "src")
 
     return candidates
 

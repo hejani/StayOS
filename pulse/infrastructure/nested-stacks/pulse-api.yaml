@@ -1,14 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  PULSE API Stack - the REST API (API Gateway HTTP API + pulse-api Lambda +
-  Cognito JWT authorizer + WAF at the edge) and the AWS AppSync Events API
-  (foreground realtime: pulse namespace, Cognito auth, OnSubscribe/OnPublish
-  APPSYNC_JS namespace handler code, CloudWatch logging, WAF association). The
-  demo scenario routes are gated behind ShouldEnableDemoSimulator (the demo
-  simulator runs in-process in the pulse-api router, sharing the deployment
-  package, so no cross-Lambda invoke is needed). Outputs the AppSync Events HTTP
-  publish endpoint, WebSocket (realtime) endpoint, and API ARN so the root and
-  pipeline stacks can wire realtime publishing.
+  PULSE API stack: the REST API (API Gateway, pulse-api Lambda, Cognito JWT
+  auth, WAF) and the AppSync Events API for realtime alert delivery.
 
 # -------------------------------------------------------------------
 # Parameters

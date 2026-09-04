@@ -153,15 +153,17 @@ def _record_triage_failure(
     }
 
 
-def _parse_payload(payload: dict[str, Any]) -> tuple[str, AlertType, str, AlertTier]:
+def _parse_payload(payload: dict[str, Any]) -> tuple[str, AlertType, str, AlertTier, Optional[str]]:
     """Validate and unpack the invocation payload.
 
     Args:
         payload: The ``InvokeAgentRuntime`` payload
-            ``{alertId, alertType, propertyId, tier}`` (snake_case accepted too).
+            ``{alertId, alertType, propertyId, tier}`` (snake_case accepted too),
+            plus an optional ``blockId`` for OOO_CLUSTER alerts.
 
     Returns:
-        A ``(alert_id, alert_type, property_id, tier)`` tuple.
+        An ``(alert_id, alert_type, property_id, tier, block_id)`` tuple;
+        ``block_id`` is ``None`` when not supplied.
 
     Raises:
         TriageFailure: If a required field is missing or has an invalid value.
@@ -175,7 +177,9 @@ def _parse_payload(payload: dict[str, Any]) -> tuple[str, AlertType, str, AlertT
         raise TriageFailure(
             f"Invalid triage invocation payload: {exc}", reason="invalid_payload"
         ) from exc
-    return alert_id, alert_type, property_id, tier
+    block_id_raw = payload.get("blockId") or payload.get("block_id")
+    block_id = str(block_id_raw) if block_id_raw else None
+    return alert_id, alert_type, property_id, tier, block_id
 
 
 def _draft_for(
@@ -253,7 +257,7 @@ def handle_triage(
         table_getter = get_table
 
     try:
-        alert_id, alert_type, property_id, tier = _parse_payload(payload)
+        alert_id, alert_type, property_id, tier, block_id = _parse_payload(payload)
     except TriageFailure as failure:
         return _record_triage_failure(
             str(payload.get("alertId", "unknown")),
@@ -268,7 +272,9 @@ def handle_triage(
 
     try:
         # 1. Gather per-alert-type facts via the shared Gateway MCP tools.
-        context = build_situation_context(alert_type, property_id, tool_caller)
+        context = build_situation_context(
+            alert_type, property_id, tool_caller, block_id=block_id
+        )
 
         # 2. Generate + validate the brief (narrative from the model; structure
         #    guaranteed by pulse.triage). The internal 5/15 s budget is

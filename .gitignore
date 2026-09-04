@@ -48,3 +48,15 @@ uat.md
 # directory (lumi/, pulse/, shared/, stayos-shell/, and any future one).
 # NOTE: files already committed stay tracked until explicitly `git rm --cached`.
 AGENTS.md
+
+
+# Local planning/review docs for the data-orchestrator work — working notes,
+# not published repo source. (review-2026-08-31.md was committed earlier; it
+# stays tracked until explicitly `git rm --cached`.)
+docs/data-orchestrator-action-items.md
+docs/session-data-orchestrator-deploy.md
+docs/review-2026-08-31.md
+
+
+# Data-orchestrator local build artifacts (packaged Lambda zip staging).
+shared/data-orchestrator/build/

@@ -1,9 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  StayOS PULSE Root Stack - orchestrates the PULSE nested stacks (data,
-  pipeline, api, observability) for the real-time GM alert layer. Reuses the
-  shared StayOS platform (Cognito, WAF, operational DynamoDB streams) via
-  parameters.
+  StayOS PULSE root stack: orchestrates the PULSE data, pipeline, API, and
+  observability nested stacks for the real-time GM alert layer.
 
 # UserPoolArn is a deliberately-retained platform input (documented on the
 # parameter): the deploy contract and Makefile pass it, but the API stack

@@ -1,19 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  PULSE Pipeline Stack - the rule/escalation/delivery pipeline:
-  pulse-rule-evaluator, pulse-escalation-service, pulse-push-service,
-  pulse-info-batcher, and pulse-history-writer, plus the DynamoDB Stream
-  event-source mappings and the EventBridge Scheduler group/role for escalation
-  checkpoints, the safety-net sweep, and the INFO batch interval. The rule
-  evaluator hands triage off to a dedicated pulse-triage-invoker Lambda via an
-  asynchronous ("Event") invoke so the stream handler never blocks; that
-  invoker gets bedrock-agentcore:InvokeAgentRuntime to fire the Triage Agent
-  runtime. The Triage Agent itself runs on Amazon Bedrock
-  AgentCore Runtime (deployed out-of-band; its runtime IAM role and SSM config
-  live in pulse-api.yaml) and is no longer a Lambda here. Least-privilege IAM
-  roles carry a region suffix; every resource is tagged Project=PULSE +
-  resilience-tier. Lambda code is one shared deployment package; each function
-  selects its entry point via a distinct pulse.<component> handler.
+  PULSE pipeline stack: the rule-evaluator, escalation, push, info-batcher, and
+  history-writer Lambdas with their DynamoDB stream mappings and EventBridge
+  Scheduler group for escalation and delivery.
 
 # -------------------------------------------------------------------
 # Parameters
