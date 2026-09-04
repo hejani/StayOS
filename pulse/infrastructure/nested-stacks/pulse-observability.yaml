@@ -1,16 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  PULSE Observability Stack (Task 22) - the CloudWatch dashboard
-  (pulse-overview: AlertDeliveryLatencyMs p50/p90/p99 per tier + AppSync Events
-  realtime metrics + pipeline failure counters), the alarms (triage failures,
-  delivery-exhausted, escalation-exhaustion, elevated AppSync publish/connection
-  errors, realtime publish errors) and the pulse-alarms SNS topic. Log-derived
-  metrics are extracted from the unified pipeline log group (the StackPrefix
-  pipeline log group) with metric filters; the delivery-latency metric is
-  emitted as EMF by pulse.observability.metrics. X-Ray tracing is enabled at the
-  Lambdas themselves (TracingConfig Active in the pipeline/api stacks) with a
-  Powertools tracer, giving distinct generation and delivery segments
-  (Requirement 17.3).
+  PULSE observability stack: the CloudWatch dashboard, alarms (triage,
+  delivery, escalation, AppSync/realtime errors), and the pulse-alarms SNS
+  topic for the alert pipeline.
 
 # -------------------------------------------------------------------
 # Parameters

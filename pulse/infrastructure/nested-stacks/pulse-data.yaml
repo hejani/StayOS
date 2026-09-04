@@ -1,10 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  PULSE Data Stack - the five PULSE-owned DynamoDB tables (pulse-alerts,
-  pulse-rules, pulse-alert-history, pulse-push-subscriptions, pulse-kitchen),
-  their GSIs, TTL, and the DynamoDB Stream on pulse-alerts. On-demand
-  (PAY_PER_REQUEST) billing throughout. Attribute names are camelCase; logical
-  IDs are PascalCase; physical names use the StackPrefix (pulse) prefix.
+  PULSE data stack: the five PULSE-owned DynamoDB tables (alerts, rules,
+  alert-history, push-subscriptions, kitchen) with their GSIs, TTL, and the
+  pulse-alerts stream.
 
 # -------------------------------------------------------------------
 # Parameters
