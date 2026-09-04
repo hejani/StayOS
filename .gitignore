@@ -56,3 +56,7 @@ AGENTS.md
 docs/data-orchestrator-action-items.md
 docs/session-data-orchestrator-deploy.md
 docs/review-2026-08-31.md
+
+
+# Data-orchestrator local build artifacts (packaged Lambda zip staging).
+shared/data-orchestrator/build/
