@@ -89,6 +89,14 @@ roll-forward + PULSE-baseline layer, wired to the live LUMI table names and PULS
 rule-evaluator stream mappings. The orchestrator is additive: it does not
 re-seed or bulk-rewrite the live dataset.
 
+**First run is populated automatically.** The orchestrator deploy step primes
+today's data for every pilot property (an idempotent, failure-isolated
+roll-forward), so immediately after `make deploy-all` each GM has a current daily
+brief — no manual step. Thereafter one per-property EventBridge schedule
+re-anchors the window at each property's local midnight. (As a safety net, the
+VIP-arrivals tool also falls back to a live reservations query if a brief for the
+current date is ever missing, so it never reports a false "no VIP arrivals".)
+
 Run `make help` from the repo root for the full target list (per-feature
 deploys, tests, and other targets — including `make data-<target>` for the
 orchestrator). See each feature's README for its own targets and internals.
