@@ -158,24 +158,29 @@ async def get_occupancy(
 
 async def get_revenue(
     property_id: str,
-    startDate: Optional[str] = None,
-    endDate: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Query revenue KPIs (ADR, RevPAR, comparisons) from the revenues table.
 
     Retrieves Average Daily Rate, Revenue Per Available Room, and
     period-over-period comparisons from the daily revenue snapshot.
 
+    Parameter names use snake_case to match the get_revenue tool schema in
+    tools_config.py (start_date, end_date). Nova Sonic sends the tool input
+    keys verbatim and dispatch_tool forwards them as **params, so a mismatch
+    here raises TypeError and the tool reports "temporarily unavailable".
+
     Args:
         property_id: Property scope from session context (partition key).
-        startDate: ISO start date. Defaults to today.
-        endDate: ISO end date. Defaults to startDate for single-day query.
+        start_date: ISO start date. Defaults to today.
+        end_date: ISO end date. Defaults to start_date for single-day query.
 
     Returns:
         Success dict with revenue KPIs, or unavailability dict on error.
     """
-    start = startDate or _today_iso()
-    end = endDate or start
+    start = start_date or _today_iso()
+    end = end_date or start
     logger.info(
         "Querying revenue data",
         property_id=property_id,
