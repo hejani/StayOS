@@ -78,9 +78,6 @@
   data-model reference (LUMI + PULSE tables, keys/GSIs, volumes) plus the
   Unified Data Orchestrator note — how the demo data is seeded, rolled forward,
   quiesced, baselined, and fired live on stage.
-- [docs/review-2026-08-31.md](docs/review-2026-08-31.md): end-to-end review report
-  for the `security-fixes` branch — test-suite results, 8 code-review findings
-  (4 P1 / 4 P2), CloudFormation lint, and the performance-harness contract.
 - [openapi.yaml](openapi.yaml): StayOS REST API spec — currently the PULSE
   real-time alerts API (LUMI's REST spec is in [lumi/openapi.yaml](lumi/openapi.yaml)).
 - [AGENTS.md](AGENTS.md): root contributor/agent guide — repo-wide safety,

@@ -31,12 +31,6 @@ coverage.xml
 *build-frontend.log
 build.log
 
-# Session-only bug tracker (local deployment notes, not repo source).
-bugs.md
-
-# Session-only UAT tracker (local acceptance-test notes, not repo source).
-uat.md
-
 # Kiro local tooling + specs/config for every feature directory (root, lumi,
 # pulse, and any future feature). Local IDE/agent state and specs, not app
 # source. Unanchored so it matches .kiro/ at any depth.
@@ -48,14 +42,6 @@ uat.md
 # directory (lumi/, pulse/, shared/, stayos-shell/, and any future one).
 # NOTE: files already committed stay tracked until explicitly `git rm --cached`.
 AGENTS.md
-
-
-# Local planning/review docs for the data-orchestrator work — working notes,
-# not published repo source. (review-2026-08-31.md was committed earlier; it
-# stays tracked until explicitly `git rm --cached`.)
-docs/data-orchestrator-action-items.md
-docs/session-data-orchestrator-deploy.md
-docs/review-2026-08-31.md
 
 
 # Data-orchestrator local build artifacts (packaged Lambda zip staging).
