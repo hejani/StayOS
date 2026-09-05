@@ -26,11 +26,11 @@ And features are coming. StayOS is built as a platform, not a single tool
 
 Each app lives in its own top-level directory:
 
-| App | Status | Directory | Served at | What it does |
-|---|---|---|---|---|
-| **StayOS shell** | ✅ Built & tested | [`stayos-shell/`](stayos-shell/README.md) | `/` | Unified login + feature launcher grid; establishes the shared session (SSO) |
-| **LUMI** | ✅ Built & deployed | [`lumi/`](lumi/README.md) | `/lumi` | Daily AI-generated GM brief (KPIs, VIP arrivals, overbooking risk, OOO rooms) as a dashboard + 60-90s audio brief, plus voice/chat Q&A agents over the same dataset |
-| **PULSE** | ✅ Built & tested (deploy manual) | [`pulse/`](pulse/README.md) | `/pulse` | Real-time throughout-the-day tiered alerting (walk risk, VIP room readiness, complaint escalation) with agentic AI triage and closed-loop resolution |
+| App | Directory | What it does |
+|---|---|---|
+| **StayOS shell** | [`stayos-shell/`](stayos-shell/README.md) | Unified login + feature launcher grid; establishes the shared session (SSO) |
+| **LUMI** | [`lumi/`](lumi/README.md) | Daily AI-generated GM brief (KPIs, VIP arrivals, overbooking risk, OOO rooms) as a dashboard + 60-90s audio brief, plus voice/chat Q&A agents over the same dataset |
+| **PULSE** | [`pulse/`](pulse/README.md) | Real-time throughout-the-day tiered alerting (walk risk, VIP room readiness, complaint escalation) with agentic AI triage and closed-loop resolution |
 
 
 ## Repository Layout
