@@ -6,35 +6,23 @@ systems (PMS, Revenue Management, Loyalty/CRM, Facilities) into proactive,
 AI-generated intelligence for the people who run the hotel.
 
 > [!NOTE]
-> This is a prototype and customer demo — not a production deployment. It
+> This is a prototype — not a production deployment. It
 > demonstrates the architecture for StayOS using real AWS services with mock
 > operational data.
 
 
 ### Product Vision
 
-Every hotel runs on disconnected systems, so operational intelligence reaches
-associates late, in fragments, and only if they go looking for it. StayOS closes
-that gap: it reads the property's existing data and turns it into proactive,
-AI-generated intelligence delivered to the people who run the hotel, on mobile,
-before they need it.
+Every hotel runs on disconnected systems, so operational intelligence reaches associates late, in fragments, and only if they go looking for it. StayOS is an attempt to close this gap: it reads the property's existing data through a unified API layer and turns it into proactive, AI-generated intelligence, delivered to the people who run the hotel, on mobile, before they need it.
 
-StayOS ships today with **two live features**, both for the General Manager and
-both running on the same shared platform:
+In this repo, StayOS ships with **two live features** today, both aimed at the General Manager (GM) of a Property
 
 - **LUMI** starts the GM's day informed: a daily AI-generated brief (KPIs, VIP
   arrivals, overbooking risk, out-of-order rooms) delivered as a dashboard and a
-  60-90 second audio brief, plus voice and chat Q&A over the same data.
-- **PULSE** keeps the GM informed all day: real-time, tiered alerts
-  (Critical / Warning / Info) pushed the moment a situation develops, with
-  AI triage and closed-loop "human approves, agent executes" resolution.
+  60-90 second AI-generated audio brief. If the GM needs more information, LUMI also provides a voice and chat interface.
+- **PULSE** takes the pulse of hotel operations and keeps the GM informed all day: real-time, tiered alerts (Critical / Warning / Info) pushed the moment a situation develops, each triaged by an AI agent that gathers the relevant property data and attaches a decision-ready brief, then resolved closed-loop — the GM approves, the agent executes.
 
-And more is coming. StayOS is built as a platform, not a single tool: identity,
-a read-only data layer, an AI generate-and-validate pipeline, and mobile + audio
-delivery are built once and shared. New role-specific features, for revenue
-managers, front desk, facilities, and Area VPs, plug into that same foundation,
-reading the same data with no new integrations. One platform, one login, one
-data layer, a growing set of features.
+And features are coming. StayOS is built as a platform, not a single tool
 
 Each app lives in its own top-level directory:
 
