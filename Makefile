@@ -115,10 +115,10 @@ deploy-all:
 		echo ""; \
 		exit 1; \
 	fi
-	@echo "══ [1/5] Deploying LUMI ($(LUMI_STACK)) ══"
+	@echo "══ [1/6] Deploying LUMI ($(LUMI_STACK)) ══"
 	@$(MAKE) -C lumi deploy APP_PASSWORD='$(APP_PASSWORD)' AWS_PROFILE='$(PROFILE)' REGION='$(REGION)'
 	@echo ""
-	@echo "══ [2/5] Capturing LUMI outputs and deploying the PULSE stack ══"
+	@echo "══ [2/6] Capturing LUMI outputs and deploying the PULSE stack ══"
 	@set -e; \
 	out() { $(AWS) cloudformation describe-stacks --stack-name "$$1" \
 		--query "Stacks[0].Outputs[?OutputKey=='$$2'].OutputValue" --output text; }; \
@@ -179,7 +179,7 @@ deploy-all:
 		     echo "  make deploy-all APP_PASSWORD=... PROFILE=$(PROFILE) REGION=$(REGION)"; \
 		     echo ""; exit 1; }; \
 	echo ""; \
-	echo "══ [3/5] Registering PULSE tools on the shared StayOS Gateway ══"; \
+	echo "══ [3/6] Registering PULSE tools on the shared StayOS Gateway ══"; \
 	$(MAKE) -C pulse gateway-deploy PROFILE='$(PROFILE)' REGION='$(REGION)' \
 		TOOL_LAMBDA_ARN="$$TOOL_LAMBDA_ARN" \
 		|| { echo ""; \
@@ -187,7 +187,7 @@ deploy-all:
 		     echo "Re-run only this step: make pulse-gateway-deploy PROFILE=$(PROFILE) REGION=$(REGION) TOOL_LAMBDA_ARN=$$TOOL_LAMBDA_ARN"; \
 		     echo ""; exit 1; }; \
 	echo ""; \
-	echo "══ [4/5] Building the Triage Agent runtime, then re-deploying PULSE with its ARN ══"; \
+	echo "══ [4/6] Building the Triage Agent runtime, then re-deploying PULSE with its ARN ══"; \
 	$(MAKE) -C pulse triage-deploy PROFILE='$(PROFILE)' REGION='$(REGION)' \
 		|| { echo ""; \
 		     echo "ERROR: Triage Agent build/deploy failed (CodeBuild or AgentCore). Both stacks"; \

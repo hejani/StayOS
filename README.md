@@ -49,6 +49,7 @@ Each app lives in its own top-level directory:
 
 ```
 StayOS/
+├── openapi.yaml   # Root API spec: documents the PULSE real-time alerts REST API (LUMI's API is in lumi/openapi.yaml)
 ├── stayos-shell/  # StayOS shell: unified login + feature launcher, served at /
 ├── lumi/          # Feature 1: daily GM brief (backend, frontend, infra, docs), served at /lumi
 ├── pulse/         # Feature 2: real-time alerting (backend, frontend, infra, docs), served at /pulse
