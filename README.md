@@ -74,49 +74,30 @@ One command, `make deploy-all`, runs the full pipeline below.
 
 `make deploy-all` runs one ordered pipeline — each stage feeds the next, so
 **PULSE is never deployed standalone**: it consumes outputs captured from the
-LUMI deploy. Flow reads left to right; boxes are color-coded by the component
-that owns them.
+LUMI deploy. In order, it deploys **LUMI → PULSE → Data Orchestrator**:
 
-```mermaid
-flowchart LR
-    Start(["make deploy-all"]) --> L1
+1. Deploy the **LUMI** stack (the shared foundation).
+2. Capture LUMI's outputs (Cognito pool, the five operational-table stream ARNs,
+   the shared Gateway endpoint, the Tool Lambda ARN) and deploy the **PULSE**
+   stack with them threaded in.
+3. Register PULSE's tools on the shared Gateway, build + deploy the Triage Agent,
+   and publish the PULSE PWA to `/pulse`.
+4. Deploy the shared **Data Orchestrator** (`stayos-data`) — an additive
+   roll-forward layer that primes today's data for every property.
 
-    subgraph LUMI["🔵 LUMI"]
-        L1["1 · Deploy LUMI stack"] --> L2["2 · Capture outputs<br/>Cognito · 5 stream ARNs<br/>Gateway · Tool Lambda ARN"]
-    end
+Two behaviors worth calling out:
 
-    subgraph PULSE["🔴 PULSE"]
-        P1["3 · Deploy PULSE stack"] --> P2["4 · Register Gateway tools"] --> P3["5 · Build + deploy Triage Agent"] --> P4["6 · Publish PWA to /pulse"]
-    end
-
-    subgraph DATA["🟢 Data Orchestrator"]
-        D1["7 · Deploy stayos-data<br/>additive roll-forward"] --> D2["8 · Prime today's data<br/>every property"]
-    end
-
-    L2 -->|outputs threaded in| P1
-    P4 --> D1
-    D2 --> Done(["✅ Every GM has<br/>a live brief"])
-
-    classDef lumi fill:#e3f2fd,stroke:#1565c0,color:#0d47a1;
-    classDef pulse fill:#fce4ec,stroke:#c2185b,color:#880e4f;
-    classDef data fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20;
-    classDef edge fill:#fff,stroke:#616161,color:#212121,stroke-dasharray:4 3;
-    class L1,L2 lumi;
-    class P1,P2,P3,P4 pulse;
-    class D1,D2 data;
-    class Start,Done edge;
-```
-
-**Two behaviors the diagram implies but worth calling out:**
-
-- **Step 7 is additive** — the orchestrator rolls data forward and lays down the
+- **The Data Orchestrator is additive** — it rolls data forward and lays down the
   PULSE baseline. It never re-seeds or bulk-rewrites the live dataset.
-- **Step 8 populates the platform on first run** — every GM has a current daily
-  brief immediately after `deploy-all`, no manual step. A per-property
-  EventBridge schedule then re-anchors the window at each property's local
-  midnight. As a safety net, the VIP-arrivals tool falls back to a live
-  reservations query if a brief is ever missing, so it never reports a false
-  "no VIP arrivals".
+- **The platform is populated on first run** — every GM has a current daily brief
+  immediately after `deploy-all`, no manual step. A per-property EventBridge
+  schedule then re-anchors the window at each property's local midnight. As a
+  safety net, the VIP-arrivals tool falls back to a live reservations query if a
+  brief is ever missing, so it never reports a false "no VIP arrivals".
+
+📖 **Further reading:** [`docs/deployment-pipeline.md`](docs/deployment-pipeline.md)
+walks through the full six-stage pipeline with a diagram, the Makefile structure,
+every parameter, and failure-recovery steps.
 
 > Run `make help` from the repo root for the full target list (per-feature
 > deploys, tests, and `make data-<target>` for the orchestrator). See each
