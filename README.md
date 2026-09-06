@@ -68,27 +68,59 @@ make deploy-all APP_PASSWORD=YourSecurePassword123!
 make deploy-all APP_PASSWORD=YourSecurePassword123! PROFILE=my-other-account REGION=us-west-2
 ```
 
-`make deploy-all` deploys LUMI, captures its stack outputs (Cognito pool, the
-five operational-table stream ARNs, the shared Gateway endpoint, the Tool Lambda
-ARN), and threads them into the PULSE deploy — so PULSE is never deployed
-standalone from here. It also registers the shared Gateway tools, builds and
-deploys the PULSE Triage Agent, publishes the PULSE PWA to `/pulse`, and finally
-deploys the shared **Data Orchestrator** (`stayos-data`) — the additive
-roll-forward + PULSE-baseline layer, wired to the live LUMI table names and PULSE
-rule-evaluator stream mappings. The orchestrator is additive: it does not
-re-seed or bulk-rewrite the live dataset.
+One command, `make deploy-all`, runs the full pipeline below.
 
-**First run is populated automatically.** The orchestrator deploy step primes
-today's data for every pilot property (an idempotent, failure-isolated
-roll-forward), so immediately after `make deploy-all` each GM has a current daily
-brief — no manual step. Thereafter one per-property EventBridge schedule
-re-anchors the window at each property's local midnight. (As a safety net, the
-VIP-arrivals tool also falls back to a live reservations query if a brief for the
-current date is ever missing, so it never reports a false "no VIP arrivals".)
+## Deployment Pipeline
 
-Run `make help` from the repo root for the full target list (per-feature
-deploys, tests, and other targets — including `make data-<target>` for the
-orchestrator). See each feature's README for its own targets and internals.
+`make deploy-all` runs one ordered pipeline — each stage feeds the next, so
+**PULSE is never deployed standalone**: it consumes outputs captured from the
+LUMI deploy. Flow reads left to right; boxes are color-coded by the component
+that owns them.
+
+```mermaid
+flowchart LR
+    Start(["make deploy-all"]) --> L1
+
+    subgraph LUMI["🔵 LUMI"]
+        L1["1 · Deploy LUMI stack"] --> L2["2 · Capture outputs<br/>Cognito · 5 stream ARNs<br/>Gateway · Tool Lambda ARN"]
+    end
+
+    subgraph PULSE["🔴 PULSE"]
+        P1["3 · Deploy PULSE stack"] --> P2["4 · Register Gateway tools"] --> P3["5 · Build + deploy Triage Agent"] --> P4["6 · Publish PWA to /pulse"]
+    end
+
+    subgraph DATA["🟢 Data Orchestrator"]
+        D1["7 · Deploy stayos-data<br/>additive roll-forward"] --> D2["8 · Prime today's data<br/>every property"]
+    end
+
+    L2 -->|outputs threaded in| P1
+    P4 --> D1
+    D2 --> Done(["✅ Every GM has<br/>a live brief"])
+
+    classDef lumi fill:#e3f2fd,stroke:#1565c0,color:#0d47a1;
+    classDef pulse fill:#fce4ec,stroke:#c2185b,color:#880e4f;
+    classDef data fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20;
+    classDef edge fill:#fff,stroke:#616161,color:#212121,stroke-dasharray:4 3;
+    class L1,L2 lumi;
+    class P1,P2,P3,P4 pulse;
+    class D1,D2 data;
+    class Start,Done edge;
+```
+
+**Two behaviors the diagram implies but worth calling out:**
+
+- **Step 7 is additive** — the orchestrator rolls data forward and lays down the
+  PULSE baseline. It never re-seeds or bulk-rewrites the live dataset.
+- **Step 8 populates the platform on first run** — every GM has a current daily
+  brief immediately after `deploy-all`, no manual step. A per-property
+  EventBridge schedule then re-anchors the window at each property's local
+  midnight. As a safety net, the VIP-arrivals tool falls back to a live
+  reservations query if a brief is ever missing, so it never reports a false
+  "no VIP arrivals".
+
+> Run `make help` from the repo root for the full target list (per-feature
+> deploys, tests, and `make data-<target>` for the orchestrator). See each
+> feature's README for its own targets and internals.
 
 ## Data Model
 
