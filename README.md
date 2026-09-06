@@ -96,11 +96,13 @@ All features read from **one shared DynamoDB operational layer** owned by LUMI:
 5 read-only dataset tables (`stayos-guests`, `stayos-rooms`,
 `stayos-reservations`, `stayos-work-orders`, `stayos-revenues`) plus 2 LUMI
 application tables (`stayos-briefs`, `stayos-settings`). PULSE adds its own
-`pulse-*` tables (see [`pulse/README.md`](pulse/README.md)). Every table is
-partitioned by `propertyId`, which is the data-isolation boundary between
-properties. The 5 dataset tables seed once, are read-only at runtime
-(`Query`/`GetItem`), and stream changes (`NEW_AND_OLD_IMAGES`) — which is what
-PULSE's rule engine evaluates to fire real-time alerts.
+`pulse-*` tables (see [`pulse/README.md`](pulse/README.md)). The 5 dataset
+tables are partitioned by `propertyId`, which is the data-isolation boundary
+between properties (`stayos-settings` is keyed by `gmAlias`). They seed once and
+are read-only at runtime (`Query`/`GetItem`) — the only runtime write-back is
+PULSE's GM-approved closed-loop Action Executor — and they stream changes
+(`NEW_AND_OLD_IMAGES`), which is what PULSE's rule engine evaluates to fire
+real-time alerts.
 
 The shared **Data Orchestrator** (`shared/data-orchestrator/`) re-anchors this
 dataset daily: one per-property EventBridge schedule fires at each property's
