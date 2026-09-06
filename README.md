@@ -68,8 +68,6 @@ make deploy-all APP_PASSWORD=YourSecurePassword123!
 make deploy-all APP_PASSWORD=YourSecurePassword123! PROFILE=my-other-account REGION=us-west-2
 ```
 
-One command, `make deploy-all`, runs the full pipeline below.
-
 ## Deployment Pipeline
 
 `make deploy-all` runs one ordered pipeline — each stage feeds the next, so
