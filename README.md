@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/stayos-logo.svg" alt="StayOS logo" width="96" height="96" />
+  <img src="stayos-shell/frontend/assets/stayos-logo.svg" alt="StayOS logo" width="96" height="96" />
 </p>
 
 # StayOS
@@ -21,10 +21,10 @@ Every hotel runs on disconnected systems, so operational intelligence reaches as
 
 In this repo, StayOS ships with **two live features** today, both aimed at the General Manager (GM) of a Property
 
-- <img src="assets/lumi-logo.svg" alt="LUMI icon" width="18" height="18" align="absmiddle" /> **LUMI** starts the GM's day informed: a daily AI-generated brief (KPIs, VIP
+- <img src="stayos-shell/frontend/assets/lumi-logo.svg" alt="LUMI icon" width="18" height="18" align="absmiddle" /> **LUMI** starts the GM's day informed: a daily AI-generated brief (KPIs, VIP
   arrivals, overbooking risk, out-of-order rooms) delivered as a dashboard and a
   60-90 second AI-generated audio brief. If the GM needs more information, LUMI also provides a voice and chat interface.
-- <img src="assets/pulse-logo.svg" alt="PULSE icon" width="18" height="18" align="absmiddle" /> **PULSE** takes the pulse of hotel operations and keeps the GM informed all day: real-time, tiered alerts (Critical / Warning / Info) pushed the moment a situation develops, each triaged by an AI agent that gathers the relevant property data and attaches a decision-ready brief, then resolved closed-loop — the GM approves, the agent executes.
+- <img src="stayos-shell/frontend/assets/pulse-logo.svg" alt="PULSE icon" width="18" height="18" align="absmiddle" /> **PULSE** takes the pulse of hotel operations and keeps the GM informed all day: real-time, tiered alerts (Critical / Warning / Info) pushed the moment a situation develops, each triaged by an AI agent that gathers the relevant property data and attaches a decision-ready brief, then resolved closed-loop — the GM approves, the agent executes.
 
 And features are coming. StayOS is built as a platform, not a single tool
 
