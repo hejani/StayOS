@@ -46,3 +46,7 @@ AGENTS.md
 
 # Data-orchestrator local build artifacts (packaged Lambda zip staging).
 shared/data-orchestrator/build/
+
+# Temporary security-fix reference doc — local working notes for the
+# Dependabot remediation, not committed source. Delete once the fix lands.
+docs/security-fix.md
