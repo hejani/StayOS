@@ -72,6 +72,8 @@ NEXT_PUBLIC_COGNITO_REGION=us-east-1
 
 ## Commands
 
+**Prerequisites:** Node.js 18.18+ and npm (required by Next.js 15 / React 19).
+
 ```bash
 cd frontend
 npm install          # (.npmrc pins legacy-peer-deps for the React 19 / testing-library mix)
@@ -96,3 +98,8 @@ make shell-deploy [PROFILE=... REGION=...]
 builds the static export, syncs it to the bucket root (excluding `/lumi/*` and
 `/pulse/*`), and invalidates the shell's root cache entries. See the
 [root README](../README.md#deployment) for the full-platform deploy order.
+
+## Contributing
+
+Contributions are welcome. See the [contributing guide](../CONTRIBUTING.md) for
+PR conventions, coding standards, and how to propose changes.

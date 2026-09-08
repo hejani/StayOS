@@ -1,4 +1,4 @@
-# LUMI — Daily GM Intelligence Brief (StayOS Feature #1)
+# LUMI — Daily GM Intelligence Brief
 
 LUMI is the first feature of [StayOS](../README.md) — the General Manager's
 daily intelligence brief. It is not a separate product; GMs use LUMI, which
@@ -10,7 +10,7 @@ ready to consume during a property walk-through, not chained to a workstation.
 > [!NOTE]
 > This is a prototype and customer demo — not a production deployment. It demonstrates the architecture for StayOS using real AWS services with mock operational data.
 
-## Demo Screen shots
+## Demo Screenshots
 
 <p align="center">
   <img src="docs/lumi.gif" alt="LUMI mobile app demo" width="400" />
@@ -22,11 +22,10 @@ ready to consume during a property walk-through, not chained to a workstation.
 3. [Architecture Overview](#architecture-overview)
 4. [Pilot Properties](#pilot-properties)
 5. [Deployment](#deployment)
-6. [Voice Agent (AgentCore)](#voice-agent-agentcore)
-7. [Chat Agent (AgentCore + Gateway)](#chat-agent-agentcore--gateway)
-8. [Data Sources](#data-sources)
-9. [Tech Stack](#tech-stack)
-10. [References](#references)
+   - [Voice Agent (AgentCore)](#voice-agent-agentcore)
+6. [Chat Agent (AgentCore + Gateway)](#chat-agent-agentcore--gateway)
+7. [Data Sources](#data-sources)
+8. [References](#references)
 
 ## Why This Exists
 
@@ -138,6 +137,8 @@ The voice agent uses SigV4 authentication via Cognito Identity Pool (replacing t
 2. **SigV4 WebSocket** - Temporary credentials sign a presigned WebSocket URL for the AgentCore endpoint
 3. **Identity verification** - The Access Token is sent as the first message; the container calls `cognito-idp:GetUser` to extract the GM's `propertyId` and `gmAlias`
 4. **Voice session** - Standard bidirectional audio streaming via Nova Sonic (same protocol as before)
+
+See [`docs/voice-agent-architecture.png`](docs/voice-agent-architecture.png) for the full component diagram.
 
 
 ## Chat Agent (AgentCore + Gateway)
