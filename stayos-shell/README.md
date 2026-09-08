@@ -1,8 +1,5 @@
 # StayOS Shell — Unified Login + Feature Launcher
 
-**Status: built, tested, and deployed** at the site root (`/`) of the shared
-StayOS CloudFront distribution.
-
 The StayOS shell is the single entry point for StayOS. It owns the site root
 (`/`) and provides:
 
@@ -12,11 +9,23 @@ The StayOS shell is the single entry point for StayOS. It owns the site root
   apps: **LUMI** at `/lumi/` and **PULSE** at `/pulse/` (plus "Coming Soon"
   tiles for future features).
 
-Because all three apps are served from one origin and share a single browser
-session (see `shared/auth/`), signing in at the shell means LUMI and PULSE open
-with **no second login** — single sign-on across StayOS. The shell is the one
-place a GM authenticates; the features trust the already-established shared
-session (they do not host their own login as an entry point).
+## Screenshots
+
+The shell renders a login view when unauthenticated and a feature launcher once
+signed in (single sign-on carries the session into LUMI and PULSE).
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="frontend/assets/shell-login.png" alt="StayOS shell login view" width="100%" /><br/>
+      <sub>Login (unauthenticated)</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="frontend/assets/shell-launcher.png" alt="StayOS shell feature launcher grid" width="100%" /><br/>
+      <sub>Feature launcher (authenticated)</sub>
+    </td>
+  </tr>
+</table>
 
 ## Architecture
 
